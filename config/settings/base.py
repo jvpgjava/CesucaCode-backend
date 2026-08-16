@@ -23,6 +23,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "apps.core",
     "apps.accounts",
+    "apps.documents",
 ]
 
 MIDDLEWARE = [
@@ -110,7 +111,7 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="CesucaCode <naoresponda@
 SPECTACULAR_SETTINGS = {
     "TITLE": "CesucaCode API",
     "DESCRIPTION": "IA acadêmica dos cursos de Tecnologia do Centro Universitário Cesuca",
-    "VERSION": "1.0.0",
+    "VERSION": "1.0.1",
     "SERVE_INCLUDE_SCHEMA": False,
     "SORT_OPERATIONS": False,
     "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],

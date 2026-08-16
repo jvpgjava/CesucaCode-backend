@@ -44,7 +44,9 @@ class DocumentChunksView(generics.ListAPIView):
     permission_classes = [CanManageDocuments]
 
     def get_queryset(self):
-        document = generics.get_object_or_404(Document, pk=self.kwargs["pk"])
+        document = generics.get_object_or_404(
+            get_documents_queryset(self.request.user), pk=self.kwargs["pk"]
+        )
         self.check_object_permissions(self.request, document)
         return document.chunks.all()
 
@@ -53,8 +55,8 @@ class DocumentReprocessView(APIView):
     permission_classes = [CanManageDocuments]
 
     def post(self, request, pk):
-        document = generics.get_object_or_404(Document, pk=pk)
+        document = generics.get_object_or_404(get_documents_queryset(request.user), pk=pk)
         self.check_object_permissions(request, document)
         services.reprocess_document(document)
         document.refresh_from_db()
-        return Response(DocumentSerializer(document).data)
+        return Response(DocumentSerializer(document, context={"request": request}).data)

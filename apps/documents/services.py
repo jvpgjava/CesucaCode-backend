@@ -1,7 +1,11 @@
+import logging
+
 from django.db import transaction
 
 from . import chunking, extraction
 from .models import Document, DocumentChunk
+
+logger = logging.getLogger(__name__)
 
 
 def create_document(*, title, course, file, uploaded_by) -> Document:
@@ -48,6 +52,12 @@ def _process_document(document: Document) -> None:
             document.processing_error = ""
             document.save(update_fields=["status", "processing_error", "updated_at"])
     except Exception as exc:
+        if isinstance(exc, extraction.UnsupportedFileTypeError):
+            document.processing_error = str(exc)
+        else:
+            logger.exception("Falha ao processar o documento %s", document.id)
+            document.processing_error = (
+                "Falha ao processar o arquivo. Tente reenviar ou contate o suporte."
+            )
         document.status = Document.Status.FAILED
-        document.processing_error = str(exc)
         document.save(update_fields=["status", "processing_error", "updated_at"])

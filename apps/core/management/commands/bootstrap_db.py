@@ -39,6 +39,11 @@ class Command(BaseCommand):
                 "DATABASE_URL não está configurada corretamente no .env "
                 "(faltando nome do banco ou usuário)."
             )
+        if not target_password:
+            raise CommandError(
+                "DATABASE_URL precisa incluir uma senha para criar a role/banco "
+                "(ex.: postgres://usuario:senha@host:porta/banco)."
+            )
 
         superuser_password = options["superuser_password"] or getpass.getpass(
             f"Senha do usuário '{superuser}' no PostgreSQL ({host}:{port}): "

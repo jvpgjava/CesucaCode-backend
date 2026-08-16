@@ -32,7 +32,7 @@ def _notify_password(user: User, password: str, *, is_reset: bool) -> bool:
 def create_student(*, email, full_name, rgm, course, nickname="") -> User:
     password = generate_temporary_password()
     user = User(
-        email=email,
+        email=email.strip().lower(),
         full_name=full_name,
         nickname=nickname,
         rgm=rgm,
@@ -50,7 +50,7 @@ def create_student(*, email, full_name, rgm, course, nickname="") -> User:
 def create_coordinator(*, email, full_name, coordinated_courses, nickname="") -> User:
     password = generate_temporary_password()
     user = User(
-        email=email,
+        email=email.strip().lower(),
         full_name=full_name,
         nickname=nickname,
         role=User.Role.CS_COORDINATOR,

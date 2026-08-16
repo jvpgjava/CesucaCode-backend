@@ -18,7 +18,14 @@ MIDDLEWARE = [
     "whitenoise.middleware.WhiteNoiseMiddleware",
     *MIDDLEWARE[1:],
 ]
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:  # noqa: F405

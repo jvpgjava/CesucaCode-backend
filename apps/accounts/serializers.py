@@ -28,6 +28,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class StudentCreateSerializer(serializers.ModelSerializer):
     course = serializers.SlugRelatedField(slug_field="code", queryset=Course.objects.all())
+    email = serializers.EmailField()
     rgm = serializers.CharField(
         max_length=20,
         validators=[
@@ -42,6 +43,12 @@ class StudentCreateSerializer(serializers.ModelSerializer):
         fields = ["id", "email", "full_name", "nickname", "rgm", "course", "email_sent"]
         read_only_fields = ["id"]
 
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("Já existe um usuário com esse e-mail.")
+        return value
+
     def get_email_sent(self, obj):
         return getattr(obj, "_email_sent", None)
 
@@ -53,12 +60,19 @@ class CoordinatorCreateSerializer(serializers.ModelSerializer):
     coordinated_courses = serializers.SlugRelatedField(
         slug_field="code", queryset=Course.objects.all(), many=True
     )
+    email = serializers.EmailField()
     email_sent = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ["id", "email", "full_name", "nickname", "coordinated_courses", "email_sent"]
         read_only_fields = ["id"]
+
+    def validate_email(self, value):
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("Já existe um usuário com esse e-mail.")
+        return value
 
     def get_email_sent(self, obj):
         return getattr(obj, "_email_sent", None)

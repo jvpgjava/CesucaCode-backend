@@ -7,7 +7,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from . import services
 from .models import Course, User
-from .permissions import IsCSAdmin
+from .permissions import IsCSAdmin, PasswordIsCurrent
 from .serializers import (
     ChangePasswordSerializer,
     CoordinatorCreateSerializer,
@@ -64,17 +64,17 @@ class CourseListView(generics.ListAPIView):
 class CreateStudentView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = StudentCreateSerializer
-    permission_classes = [IsCSAdmin]
+    permission_classes = [IsCSAdmin, PasswordIsCurrent]
 
 
 class CreateCoordinatorView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = CoordinatorCreateSerializer
-    permission_classes = [IsCSAdmin]
+    permission_classes = [IsCSAdmin, PasswordIsCurrent]
 
 
 class BulkImportStudentsView(APIView):
-    permission_classes = [IsCSAdmin]
+    permission_classes = [IsCSAdmin, PasswordIsCurrent]
     parser_classes = [MultiPartParser]
 
     def post(self, request):
@@ -102,7 +102,7 @@ class BulkImportStudentsView(APIView):
 
 
 class ResetPasswordView(APIView):
-    permission_classes = [IsCSAdmin]
+    permission_classes = [IsCSAdmin, PasswordIsCurrent]
 
     def post(self, request, pk):
         user = generics.get_object_or_404(User, pk=pk)

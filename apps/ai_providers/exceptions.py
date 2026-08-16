@@ -1,0 +1,2 @@
+class ProviderConfigurationError(Exception):
+    pass

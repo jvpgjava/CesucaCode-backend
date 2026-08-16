@@ -1,6 +1,8 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
+from pgvector.django import VectorField
 
 from apps.core.models import TimeStampedModel
 
@@ -37,6 +39,7 @@ class DocumentChunk(TimeStampedModel):
     document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="chunks")
     index = models.PositiveIntegerField()
     content = models.TextField()
+    embedding = VectorField(dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True)
 
     class Meta:
         ordering = ["document_id", "index"]

@@ -133,6 +133,22 @@
       "name": "2. Contas (CSAdmin)",
       "item": [
         {
+          "name": "Listar contas",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/auth/accounts/?search=&role=",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "accounts", ""],
+              "query": [
+                { "key": "search", "value": "", "description": "Busca em nome, e-mail e RGM" },
+                { "key": "role", "value": "", "description": "cs_student ou cs_coordinator" }
+              ]
+            },
+            "description": "Requer token de CSAdmin. Lista alunos e coordenadores (CSAdmin não aparece, não é gerenciado por esta API). Suporta busca e filtro por papel."
+          }
+        },
+        {
           "name": "Criar estudante",
           "request": {
             "method": "POST",

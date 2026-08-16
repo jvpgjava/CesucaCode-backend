@@ -1,3 +1,4 @@
+from django.db.models import Q
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
@@ -59,6 +60,28 @@ class ChangePasswordView(APIView):
 class CourseListView(generics.ListAPIView):
     queryset = Course.objects.all()
     serializer_class = CourseSerializer
+
+
+class AccountListView(generics.ListAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [IsCSAdmin, PasswordIsCurrent]
+
+    def get_queryset(self):
+        queryset = User.objects.exclude(role=User.Role.CS_ADMIN).select_related("course")
+
+        role = self.request.query_params.get("role")
+        if role:
+            queryset = queryset.filter(role=role)
+
+        search = self.request.query_params.get("search")
+        if search:
+            queryset = queryset.filter(
+                Q(full_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(rgm__icontains=search)
+            )
+
+        return queryset
 
 
 class CreateStudentView(generics.CreateAPIView):

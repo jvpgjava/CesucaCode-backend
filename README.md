@@ -246,10 +246,18 @@ Todas as rotas ficam sob `/api/auth/`:
 | GET | `/api/auth/me/` | Dados do usuário autenticado | Qualquer autenticado |
 | POST | `/api/auth/change-password/` | Troca a própria senha | Qualquer autenticado |
 | GET | `/api/auth/courses/` | Lista os cursos existentes | Qualquer autenticado (com senha em dia) |
+| GET | `/api/auth/accounts/` | Lista alunos e coordenadores (`?search=`, `?role=`) | CSAdmin |
 | POST | `/api/auth/accounts/students/` | Cria um estudante | CSAdmin |
 | POST | `/api/auth/accounts/students/import/` | Importa estudantes em massa via CSV | CSAdmin |
 | POST | `/api/auth/accounts/coordinators/` | Cria um coordenador | CSAdmin |
 | POST | `/api/auth/accounts/{id}/reset-password/` | Gera uma nova senha aleatória e envia por e-mail | CSAdmin |
+
+Exemplo — CSAdmin lista contas (busca opcional por nome/e-mail/RGM, filtro opcional por papel):
+
+```bash
+curl "http://127.0.0.1:8000/api/auth/accounts/?search=maria&role=cs_student" \
+  -H "Authorization: Bearer <token_do_csadmin>"
+```
 
 Exemplo — CSAdmin cria um estudante:
 
@@ -340,10 +348,11 @@ saindo por servidor do Gmail tende a cair em spam (falha de SPF/DKIM).
 
 ## Materiais didáticos (Documents)
 
-Upload de material didático (PDF, DOCX, PPTX ou TXT) com extração de texto e
-divisão em pedaços (chunks) — a base para a busca vetorial que entra na
-Parte 3. Processamento é **síncrono**: a resposta do upload já vem com o
-resultado final (`ready` ou `failed`).
+Upload de material didático (PDF, DOCX, PPTX ou TXT) com extração de texto,
+divisão em pedaços (chunks) e geração de embedding pra cada chunk (ver seção
+"Provedores de IA" abaixo) — a base da busca vetorial usada no chat com IA.
+Processamento é **síncrono**: a resposta do upload já vem com o resultado
+final (`ready` ou `failed`).
 
 **Quem pode o quê:**
 
@@ -393,6 +402,64 @@ material para cursos que ele coordena — tentar para outro curso retorna
 > pode demorar; se isso virar um problema real, mover para processamento
 > em background é o próximo passo natural, mas não foi necessário até
 > agora.
+
+---
+
+## Provedores de IA (LLM e Embeddings)
+
+A app `apps/ai_providers` esconde qual provider de IA está sendo usado atrás
+de duas funções (`get_chat_model()` e `get_embedding_model()`) — o resto do
+sistema nunca importa uma classe de provider específica, só chama essas
+funções. A escolha de provider é feita por variável de ambiente, e o chat e
+o embedding são **independentes**: dá pra usar um provider pra conversa e
+outro pra gerar os vetores dos documentos.
+
+**Chat** (`LLM_PROVIDER`): `gemini`, `openai`, `claude`, `ollama`,
+`deepseek` ou `abacusai`. `deepseek` e `abacusai` usam a API compatível com
+OpenAI de cada um (com `base_url` próprio), então reaproveitam o mesmo
+pacote (`langchain-openai`).
+
+**Embedding** (`EMBEDDING_PROVIDER`): `gemini` ou `ollama` — os dois
+providers testados que têm uma API de embedding simples (texto entra, vetor
+sai) compatível com o LangChain. A Abacus AI, por exemplo, só tem API de
+chat (RouteLLM); não tem uma API de embedding equivalente, por isso não
+está na lista de embedding.
+
+```env
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-2.5-flash
+
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-001
+EMBEDDING_DIMENSIONS=768
+
+GOOGLE_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPSEEK_API_KEY=
+ABACUSAI_API_KEY=
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Preencha só a chave do provider que for usar de fato.
+
+> **Atenção com `EMBEDDING_DIMENSIONS`:** o vetor de cada chunk é salvo numa
+> coluna `pgvector` de tamanho **fixo**, definido nessa variável e travado
+> na migration (`apps/documents/migrations/0002_documentchunk_embedding.py`).
+> Trocar de provider/modelo de embedding depois de já ter documentos
+> processados exige gerar uma nova migration e reprocessar todos os
+> materiais (`POST /api/documents/{id}/reprocess/`) — os embeddings antigos
+> não são compatíveis com uma dimensão diferente.
+
+Pra testar se as chaves configuradas no `.env` estão funcionando, sem
+precisar subir o servidor nem fazer upload de nada:
+
+```bash
+python manage.py test_ai_provider
+```
+
+Isso manda uma mensagem simples pro chat e gera um embedding de teste,
+mostrando se cada provider respondeu certo ou qual foi o erro.
 
 ---
 

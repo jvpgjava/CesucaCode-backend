@@ -162,9 +162,9 @@ config/                 # settings, urls raiz, wsgi/asgi
 apps/
   core/                  # base compartilhada (ex.: TimeStampedModel)
   accounts/              # usuários (CSAdmin/CSCoordinator/CSStudent), cursos e JWT
-  documents/             # upload, extração de texto e chunking de material didático
-  ai_providers/          # (em construção) abstração multi-provider de LLM/embeddings
-  conversations/         # (em construção) chat com RAG
+  documents/             # upload, extração, chunking e embeddings (pgvector)
+  ai_providers/          # factory multi-provider de LLM/embeddings (LangChain)
+  # conversations/       # (ainda não existe) chat com RAG
 requirements/
   base.txt               # dependências de produção
   dev.txt                 # base + ferramentas de desenvolvimento

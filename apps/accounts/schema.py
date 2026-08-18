@@ -8,6 +8,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
+    AccountListView,
     BulkImportStudentsView,
     ChangePasswordView,
     CourseListView,
@@ -55,6 +56,19 @@ extend_schema_view(
 extend_schema_view(
     get=extend_schema(summary="Listar cursos", tags=AUTH),
 )(CourseListView)
+
+extend_schema_view(
+    get=extend_schema(
+        summary="Listar contas (alunos e coordenadores)",
+        description=(
+            "Lista todas as contas de CSStudent e CSCoordinator (CSAdmin não "
+            "aparece aqui — não é criado/gerenciado por esta API). Aceita "
+            "`?search=` (busca em nome, e-mail e RGM) e `?role=cs_student` ou "
+            "`?role=cs_coordinator`. Restrito a CSAdmin."
+        ),
+        tags=ACCOUNTS,
+    ),
+)(AccountListView)
 
 extend_schema_view(
     post=extend_schema(

@@ -2,6 +2,8 @@ import logging
 
 from django.db import transaction
 
+from apps.ai_providers import services as ai_providers
+
 from . import chunking, extraction
 from .models import Document, DocumentChunk
 
@@ -40,12 +42,13 @@ def _process_document(document: Document) -> None:
             )
 
         chunks = chunking.chunk_text(text)
+        embeddings = ai_providers.get_embedding_model().embed_documents(chunks)
 
         with transaction.atomic():
             DocumentChunk.objects.bulk_create(
                 [
-                    DocumentChunk(document=document, index=i, content=content)
-                    for i, content in enumerate(chunks)
+                    DocumentChunk(document=document, index=i, content=content, embedding=embedding)
+                    for i, (content, embedding) in enumerate(zip(chunks, embeddings))
                 ]
             )
             document.status = Document.Status.READY

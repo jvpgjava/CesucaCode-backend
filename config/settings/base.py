@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.documents",
+    "apps.ai_providers",
 ]
 
 MIDDLEWARE = [
@@ -127,3 +128,16 @@ SIMPLE_JWT = {
 }
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+
+LLM_PROVIDER = env("LLM_PROVIDER", default="gemini")
+LLM_MODEL = env("LLM_MODEL", default="gemini-2.5-flash")
+EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="gemini")
+EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="gemini-embedding-001")
+EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
+
+GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+DEEPSEEK_API_KEY = env("DEEPSEEK_API_KEY", default="")
+ABACUSAI_API_KEY = env("ABACUSAI_API_KEY", default="")
+OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://localhost:11434")

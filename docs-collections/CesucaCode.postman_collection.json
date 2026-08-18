@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "CesucaCode API",
-    "description": "Backend da IA acadêmica do Cesuca.\n\n**Sobre senhas:** desde a Parte 1 refatorada, toda conta criada pelo CSAdmin recebe uma senha ALEATÓRIA, enviada só por e-mail — a API nunca devolve senha nenhuma. Em desenvolvimento local, o e-mail não é enviado de verdade: ele aparece IMPRESSO NO TERMINAL onde o `python manage.py runserver` está rodando. Por isso o fluxo de teste completo precisa que você copie a senha de lá manualmente.\n\nOrdem sugerida de teste:\n\n1. Rode **1. Autenticação > Login (CSAdmin)** com o e-mail/senha do seu CSAdmin — o token é salvo automaticamente.\n2. Rode **2. Contas (CSAdmin) > Criar estudante** — o id do aluno criado é salvo automaticamente em `student_id`. A resposta traz `email_sent: true/false`, mas NUNCA a senha.\n3. Olhe o terminal do `runserver` — o e-mail com a senha temporária foi impresso lá. Copie a senha.\n4. Rode **1. Autenticação > Login (genérico)**, trocando `identifier` pelo RGM do aluno criado e `password` pela senha copiada do terminal.\n5. O resto das requisições (me, trocar senha, importar CSV, resetar senha, listar cursos) já funcionam com o token salvo.\n\nTodas as requisições (exceto login/refresh) usam o `access_token` da collection automaticamente via Bearer Auth herdado.",
+    "description": "Backend da IA acadêmica do Cesuca.\n\n**Sobre senhas:** desde a Parte 1 refatorada, toda conta criada pelo CSAdmin recebe uma senha ALEATÓRIA, enviada só por e-mail — a API nunca devolve senha nenhuma. Em desenvolvimento local, o e-mail não é enviado de verdade: ele aparece IMPRESSO NO TERMINAL onde o `python manage.py runserver` está rodando. Por isso o fluxo de teste completo precisa que você copie a senha de lá manualmente.\n\nOrdem sugerida de teste:\n\n1. Rode **1. Autenticação > Login (CSAdmin)** com o e-mail/senha do seu CSAdmin — o token é salvo automaticamente.\n2. Rode **2. Contas (CSAdmin) > Criar estudante** — o id do aluno criado é salvo automaticamente em `student_id`. A resposta traz `email_sent: true/false`, mas NUNCA a senha.\n3. Olhe o terminal do `runserver` — o e-mail com a senha temporária foi impresso lá. Copie a senha.\n4. Rode **1. Autenticação > Login (genérico)**, trocando `identifier` pelo RGM do aluno criado e `password` pela senha copiada do terminal.\n5. O resto das requisições (me, trocar senha, importar CSV, resetar senha, listar cursos) já funcionam com o token salvo.\n\nPasta **4. Documentos**: upload de material didático (PDF/DOCX/PPTX/TXT) com extração de texto e chunking — use docs-collections/sample_material.txt no campo 'file' de 'Enviar material didático' para testar rápido.\n\nTodas as requisições (exceto login/refresh) usam o `access_token` da collection automaticamente via Bearer Auth herdado.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -12,7 +12,8 @@
     { "key": "base_url", "value": "http://127.0.0.1:8000", "type": "string" },
     { "key": "access_token", "value": "", "type": "string" },
     { "key": "refresh_token", "value": "", "type": "string" },
-    { "key": "student_id", "value": "", "type": "string" }
+    { "key": "student_id", "value": "", "type": "string" },
+    { "key": "document_id", "value": "", "type": "string" }
   ],
   "item": [
     {
@@ -167,7 +168,7 @@
               "formdata": [{ "key": "file", "type": "file", "src": [] }]
             },
             "url": "{{base_url}}/api/auth/accounts/students/import/",
-            "description": "Requer token de CSAdmin. No campo 'file', selecione postman/sample_students.csv (na raiz do repo) ou outro CSV com as colunas full_name,rgm,email,course,nickname."
+            "description": "Requer token de CSAdmin. No campo 'file', selecione docs-collections/sample_students.csv (na raiz do repo) ou outro CSV com as colunas full_name,rgm,email,course,nickname."
           }
         },
         {
@@ -201,6 +202,81 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/api/auth/courses/"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Documentos",
+      "item": [
+        {
+          "name": "Listar materiais didáticos",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/documents/",
+            "description": "CSAdmin vê tudo, CSCoordinator vê dos cursos que coordena, CSStudent vê do próprio curso."
+          }
+        },
+        {
+          "name": "Enviar material didático",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "Introdução a Algoritmos", "type": "text" },
+                { "key": "course", "value": "cc", "type": "text" },
+                { "key": "file", "type": "file", "src": [] }
+              ]
+            },
+            "url": "{{base_url}}/api/documents/upload/",
+            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). No campo 'file', selecione docs-collections/sample_material.txt (ou um PDF/DOCX/PPTX seu). Processamento é síncrono — a resposta já vem com status 'ready' ou 'failed'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('document_id', pm.response.json().id);",
+                  "    console.log('document_id salvo:', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ver detalhe de um material",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/documents/{{document_id}}/",
+            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). Usa o document_id salvo por 'Enviar material didático'."
+          }
+        },
+        {
+          "name": "Ver chunks extraídos",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/documents/{{document_id}}/chunks/",
+            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). Mostra os pedaços de texto extraídos, prontos para virar embedding na Parte 3."
+          }
+        },
+        {
+          "name": "Reprocessar material",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/documents/{{document_id}}/reprocess/",
+            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). Apaga os chunks existentes e refaz a extração/divisão a partir do arquivo já enviado."
+          }
+        },
+        {
+          "name": "Remover material",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/documents/{{document_id}}/",
+            "description": "Requer token de CSAdmin ou CSCoordinator (do curso)."
           }
         }
       ]

@@ -162,7 +162,7 @@ config/                 # settings, urls raiz, wsgi/asgi
 apps/
   core/                  # base compartilhada (ex.: TimeStampedModel)
   accounts/              # usuários (CSAdmin/CSCoordinator/CSStudent), cursos e JWT
-  documents/             # (em construção) upload e indexação de material didático
+  documents/             # upload, extração de texto e chunking de material didático
   ai_providers/          # (em construção) abstração multi-provider de LLM/embeddings
   conversations/         # (em construção) chat com RAG
 requirements/
@@ -338,6 +338,64 @@ saindo por servidor do Gmail tende a cair em spam (falha de SPF/DKIM).
 
 ---
 
+## Materiais didáticos (Documents)
+
+Upload de material didático (PDF, DOCX, PPTX ou TXT) com extração de texto e
+divisão em pedaços (chunks) — a base para a busca vetorial que entra na
+Parte 3. Processamento é **síncrono**: a resposta do upload já vem com o
+resultado final (`ready` ou `failed`).
+
+**Quem pode o quê:**
+
+| Papel | Upload / editar | Ver |
+|---|---|---|
+| **CSAdmin** | Qualquer curso | Todos os materiais |
+| **CSCoordinator** | Só dos cursos que coordena | Só dos cursos que coordena |
+| **CSStudent** | Não pode | Só do próprio curso |
+
+Todas as rotas ficam sob `/api/documents/`:
+
+| Método | Rota | Descrição | Quem pode |
+|--------|------|-----------|-----------|
+| GET | `/api/documents/` | Lista materiais (escopo por papel/curso) | Qualquer autenticado |
+| POST | `/api/documents/upload/` | Envia um arquivo, extrai texto e divide em chunks | CSAdmin / CSCoordinator (do curso) |
+| GET | `/api/documents/{id}/` | Detalhe de um material | CSAdmin / CSCoordinator (do curso) |
+| DELETE | `/api/documents/{id}/` | Remove um material | CSAdmin / CSCoordinator (do curso) |
+| GET | `/api/documents/{id}/chunks/` | Lista os pedaços de texto extraídos | CSAdmin / CSCoordinator (do curso) |
+| POST | `/api/documents/{id}/reprocess/` | Apaga os chunks e refaz a extração/divisão | CSAdmin / CSCoordinator (do curso) |
+
+Exemplo — CSAdmin envia um PDF:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/documents/upload/ \
+  -H "Authorization: Bearer <token>" \
+  -F "title=Introdução a Algoritmos" -F "course=cc" -F "file=@aula1.pdf"
+```
+
+Resposta:
+
+```json
+{"id":1,"title":"Introdução a Algoritmos","course":"cc","file":"http://127.0.0.1:8000/media/documents/cc/....pdf","status":"ready","processing_error":""}
+```
+
+Se a extração falhar (ex.: arquivo corrompido, PDF sem texto — como um
+scaneado sem OCR), `status` vem `"failed"` e `processing_error` traz o
+motivo; o material fica salvo mesmo assim e pode ser corrigido/reenviado
+via `reprocess/`.
+
+Limites do upload: até 20MB, formatos `pdf`/`docx`/`pptx`/`txt` (validado
+antes mesmo de tentar processar). Um `CSCoordinator` só consegue enviar
+material para cursos que ele coordena — tentar para outro curso retorna
+`400`.
+
+> **Nota:** não existe fila assíncrona (Celery/RQ) — o processamento
+> acontece na mesma requisição do upload. Para arquivos muito grandes isso
+> pode demorar; se isso virar um problema real, mover para processamento
+> em background é o próximo passo natural, mas não foi necessário até
+> agora.
+
+---
+
 ## Documentação da API (Swagger)
 
 Com o servidor rodando (`python manage.py runserver`), a documentação
@@ -355,6 +413,15 @@ crie) um `schema.py` no app correspondente usando `extend_schema_view` do
 `drf-spectacular` e garanta que ele seja importado no `ready()` do
 `AppConfig` daquele app (veja `apps/accounts/schema.py` e
 `apps/accounts/apps.py` como referência).
+
+### Collection do Postman
+
+Em `docs-collections/CesucaCode.postman_collection.json` tem uma collection
+pronta com todos os endpoints (autenticação, contas, cursos, documentos),
+já com variáveis que se preenchem sozinhas (token, id do aluno/documento
+criado) — é só importar no Postman e rodar **Login (CSAdmin)** primeiro.
+Os arquivos de exemplo usados pelos testes (`sample_students.csv`,
+`sample_material.txt`) ficam na mesma pasta.
 
 ---
 

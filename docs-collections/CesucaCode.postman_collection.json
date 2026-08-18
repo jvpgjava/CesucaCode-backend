@@ -1,0 +1,209 @@
+{
+  "info": {
+    "name": "CesucaCode API",
+    "description": "Backend da IA acadêmica do Cesuca.\n\n**Sobre senhas:** desde a Parte 1 refatorada, toda conta criada pelo CSAdmin recebe uma senha ALEATÓRIA, enviada só por e-mail — a API nunca devolve senha nenhuma. Em desenvolvimento local, o e-mail não é enviado de verdade: ele aparece IMPRESSO NO TERMINAL onde o `python manage.py runserver` está rodando. Por isso o fluxo de teste completo precisa que você copie a senha de lá manualmente.\n\nOrdem sugerida de teste:\n\n1. Rode **1. Autenticação > Login (CSAdmin)** com o e-mail/senha do seu CSAdmin — o token é salvo automaticamente.\n2. Rode **2. Contas (CSAdmin) > Criar estudante** — o id do aluno criado é salvo automaticamente em `student_id`. A resposta traz `email_sent: true/false`, mas NUNCA a senha.\n3. Olhe o terminal do `runserver` — o e-mail com a senha temporária foi impresso lá. Copie a senha.\n4. Rode **1. Autenticação > Login (genérico)**, trocando `identifier` pelo RGM do aluno criado e `password` pela senha copiada do terminal.\n5. O resto das requisições (me, trocar senha, importar CSV, resetar senha, listar cursos) já funcionam com o token salvo.\n\nTodas as requisições (exceto login/refresh) usam o `access_token` da collection automaticamente via Bearer Auth herdado.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://127.0.0.1:8000", "type": "string" },
+    { "key": "access_token", "value": "", "type": "string" },
+    { "key": "refresh_token", "value": "", "type": "string" },
+    { "key": "student_id", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Autenticação",
+      "item": [
+        {
+          "name": "Login (CSAdmin)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"seuadmin@cesuca.edu.br\",\n  \"password\": \"sua_senha_aqui\"\n}"
+            },
+            "url": "{{base_url}}/api/auth/login/",
+            "description": "Troque identifier/password pelo e-mail e senha do seu CSAdmin (o que você criou com createsuperuser). Salva o token automaticamente."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const json = pm.response.json();",
+                  "    pm.collectionVariables.set('access_token', json.access);",
+                  "    pm.collectionVariables.set('refresh_token', json.refresh);",
+                  "    console.log('Tokens salvos. must_change_password:', json.must_change_password);",
+                  "} else {",
+                  "    console.log('Login falhou:', pm.response.text());",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (genérico — e-mail ou RGM)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"20260001\",\n  \"password\": \"cole-aqui-a-senha-do-terminal\"\n}"
+            },
+            "url": "{{base_url}}/api/auth/login/",
+            "description": "Mesmo endpoint do login acima. `identifier` aceita e-mail (CSAdmin/CSCoordinator) ou RGM (CSStudent) — detectado pela presença de '@'. Não existe mais senha padrão fixa: rode 'Criar estudante' primeiro, copie a senha que aparece no terminal do runserver (o e-mail 'enviado'), e cole no campo password aqui."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const json = pm.response.json();",
+                  "    pm.collectionVariables.set('access_token', json.access);",
+                  "    pm.collectionVariables.set('refresh_token', json.refresh);",
+                  "    console.log('Tokens salvos. must_change_password:', json.must_change_password);",
+                  "} else {",
+                  "    console.log('Login falhou:', pm.response.text());",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Renovar token (refresh)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"refresh\": \"{{refresh_token}}\"\n}" },
+            "url": "{{base_url}}/api/auth/login/refresh/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('access_token', pm.response.json().access);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Meus dados (/me/)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/auth/me/",
+            "description": "Sempre acessível, mesmo com must_change_password=true."
+          }
+        },
+        {
+          "name": "Trocar minha senha",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"old_password\": \"cole-aqui-a-senha-do-terminal\",\n  \"new_password\": \"NovaSenhaForte123!\"\n}"
+            },
+            "url": "{{base_url}}/api/auth/change-password/",
+            "description": "Sempre acessível, mesmo com must_change_password=true. old_password é a senha temporária que veio por e-mail (console do runserver em dev) — não existe mais senha padrão fixa."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Contas (CSAdmin)",
+      "item": [
+        {
+          "name": "Criar estudante",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"aluno.teste@cesuca.edu.br\",\n  \"full_name\": \"Aluno de Teste\",\n  \"nickname\": \"Testinho\",\n  \"rgm\": \"20260001\",\n  \"course\": \"cc\"\n}"
+            },
+            "url": "{{base_url}}/api/auth/accounts/students/",
+            "description": "Requer token de CSAdmin. A conta sai com uma senha ALEATÓRIA (gerada na hora, nunca fixa) e must_change_password=true. A senha NUNCA vem nesta resposta — é só enviada por e-mail (em dev, aparece no terminal do runserver). A resposta traz email_sent: true/false."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('student_id', pm.response.json().id);",
+                  "    console.log('student_id salvo:', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Importar estudantes (CSV)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "file", "type": "file", "src": [] }]
+            },
+            "url": "{{base_url}}/api/auth/accounts/students/import/",
+            "description": "Requer token de CSAdmin. No campo 'file', selecione postman/sample_students.csv (na raiz do repo) ou outro CSV com as colunas full_name,rgm,email,course,nickname."
+          }
+        },
+        {
+          "name": "Criar coordenador",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"coordenador.teste@cesuca.edu.br\",\n  \"full_name\": \"Coordenador de Teste\",\n  \"nickname\": \"\",\n  \"coordinated_courses\": [\"cc\"]\n}"
+            },
+            "url": "{{base_url}}/api/auth/accounts/coordinators/",
+            "description": "Requer token de CSAdmin. coordinated_courses aceita uma lista de códigos de curso (cc, ads)."
+          }
+        },
+        {
+          "name": "Resetar senha de um usuário",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/auth/accounts/{{student_id}}/reset-password/",
+            "description": "Requer token de CSAdmin. Usa o student_id salvo pela requisição 'Criar estudante'; troque na URL se quiser resetar outro usuário. Gera uma nova senha aleatória e envia por e-mail (console do runserver em dev) — a resposta só confirma com email_sent: true/false, nunca traz a senha."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Cursos",
+      "item": [
+        {
+          "name": "Listar cursos",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/auth/courses/"
+          }
+        }
+      ]
+    }
+  ]
+}

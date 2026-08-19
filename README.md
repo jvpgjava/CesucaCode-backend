@@ -102,6 +102,10 @@ A API sobe em `http://127.0.0.1:8000/`. O painel administrativo fica em
 `http://127.0.0.1:8000/admin/`, e a documentação Swagger em
 `http://127.0.0.1:8000/api/docs/` (veja [Documentação da API](#documentação-da-api-swagger)).
 
+Para subir API, frontend e Postgres (com pgvector) juntos via Docker, use o
+`docker compose up --build` na raiz do [CesucaCode-hub](https://github.com/jvpgjava/CesucaCode-hub).
+O `Dockerfile` deste repositório é o da API; o Compose do hub orquestra os três serviços.
+
 ---
 
 ## Rodando no dia a dia (depois do setup inicial)

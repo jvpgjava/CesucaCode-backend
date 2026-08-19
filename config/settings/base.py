@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.documents",
     "apps.ai_providers",
+    "apps.conversations",
 ]
 
 MIDDLEWARE = [
@@ -141,3 +142,10 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 DEEPSEEK_API_KEY = env("DEEPSEEK_API_KEY", default="")
 ABACUSAI_API_KEY = env("ABACUSAI_API_KEY", default="")
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://localhost:11434")
+
+_system_prompt_path = Path(
+    env("SYSTEM_PROMPT_PATH", default="apps/conversations/prompts/system_prompt.md")
+)
+SYSTEM_PROMPT_PATH = str(
+    _system_prompt_path if _system_prompt_path.is_absolute() else BASE_DIR / _system_prompt_path
+)

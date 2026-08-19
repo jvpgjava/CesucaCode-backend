@@ -164,7 +164,7 @@ apps/
   accounts/              # usuários (CSAdmin/CSCoordinator/CSStudent), cursos e JWT
   documents/             # upload, extração, chunking e embeddings (pgvector)
   ai_providers/          # factory multi-provider de LLM/embeddings (LangChain)
-  # conversations/       # (ainda não existe) chat com RAG
+  conversations/         # chat com RAG (streaming via Server-Sent Events)
 requirements/
   base.txt               # dependências de produção
   dev.txt                 # base + ferramentas de desenvolvimento
@@ -460,6 +460,67 @@ python manage.py test_ai_provider
 
 Isso manda uma mensagem simples pro chat e gera um embedding de teste,
 mostrando se cada provider respondeu certo ou qual foi o erro.
+
+---
+
+## Conversas (Chat com RAG)
+
+Chat em tempo real com os materiais didáticos como contexto. Cada conversa é
+só do usuário que criou — CSAdmin/CSCoordinator não veem conversas de
+outras pessoas, e vice-versa.
+
+**Como funciona:** ao enviar uma mensagem, o backend gera o embedding da
+pergunta, busca os pedaços de material mais parecidos (limitados aos
+materiais que aquele usuário tem permissão de ver — mesmo escopo por
+curso/papel dos materiais didáticos), monta o prompt com esse contexto
+mais o histórico da conversa, e manda pro provider de chat configurado
+(`LLM_PROVIDER`). Se não achar nenhum material relevante, o modelo é
+instruído a dizer isso em vez de inventar uma resposta.
+
+**System prompt:** fica em `apps/conversations/prompts/system_prompt.md`,
+não hardcoded no Python — dá pra editar o texto/tom sem tocar em código, e
+o efeito aparece na próxima mensagem sem precisar reiniciar o servidor. Pra
+usar um arquivo em outro lugar, configure `SYSTEM_PROMPT_PATH` no `.env`
+(aceita caminho relativo à raiz do projeto ou absoluto).
+
+Todas as rotas ficam sob `/api/conversations/`:
+
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| GET | `/api/conversations/` | Lista as minhas conversas |
+| POST | `/api/conversations/` | Cria uma conversa vazia (o título se preenche sozinho na primeira mensagem) |
+| GET | `/api/conversations/{id}/` | Ver uma conversa |
+| DELETE | `/api/conversations/{id}/` | Excluir uma conversa |
+| GET | `/api/conversations/{id}/messages/` | Histórico completo de mensagens |
+| POST | `/api/conversations/{id}/messages/send/` | Enviar uma mensagem — resposta em streaming |
+
+O envio de mensagem **não devolve um JSON único** — a resposta vem em
+tempo real via [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+(`Content-Type: text/event-stream`), pedaço por pedaço, do mesmo jeito que
+ChatGPT/Claude mostram a resposta "sendo digitada". Cada evento vem como:
+
+```
+data: {"content": "pedaço de texto"}
+
+data: {"content": "mais um pedaço"}
+
+event: done
+data: {}
+```
+
+(ou `event: error` se algo falhar no meio do caminho). A mensagem do
+usuário e a resposta completa do assistente são salvas no banco
+automaticamente — não precisa (nem dá pra) mandar a resposta de volta pra
+API depois.
+
+Exemplo com curl (`-N` desativa o buffer, pra ver o streaming chegando aos
+poucos):
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/api/conversations/1/messages/send/ \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"content": "O que esse material fala sobre recursão?"}'
+```
 
 ---
 

@@ -13,7 +13,8 @@
     { "key": "access_token", "value": "", "type": "string" },
     { "key": "refresh_token", "value": "", "type": "string" },
     { "key": "student_id", "value": "", "type": "string" },
-    { "key": "document_id", "value": "", "type": "string" }
+    { "key": "document_id", "value": "", "type": "string" },
+    { "key": "conversation_id", "value": "", "type": "string" }
   ],
   "item": [
     {
@@ -276,7 +277,7 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/api/documents/{{document_id}}/chunks/",
-            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). Mostra os pedaços de texto extraídos, prontos para virar embedding na Parte 3."
+            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). Mostra os pedaços de texto extraídos, os mesmos usados na busca do chat (RAG)."
           }
         },
         {
@@ -293,6 +294,77 @@
             "method": "DELETE",
             "url": "{{base_url}}/api/documents/{{document_id}}/",
             "description": "Requer token de CSAdmin ou CSCoordinator (do curso)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Conversas (Chat)",
+      "item": [
+        {
+          "name": "Criar conversa",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/api/conversations/",
+            "description": "Cria uma conversa vazia. O título se preenche sozinho a partir da primeira mensagem enviada."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.collectionVariables.set('conversation_id', pm.response.json().id);",
+                  "    console.log('conversation_id salvo:', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Listar minhas conversas",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/conversations/",
+            "description": "Só as conversas do usuário logado."
+          }
+        },
+        {
+          "name": "Ver uma conversa",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/conversations/{{conversation_id}}/"
+          }
+        },
+        {
+          "name": "Ver histórico de mensagens",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/conversations/{{conversation_id}}/messages/"
+          }
+        },
+        {
+          "name": "Enviar mensagem (streaming)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"O que esse material fala sobre recursão?\"\n}"
+            },
+            "url": "{{base_url}}/api/conversations/{{conversation_id}}/messages/send/",
+            "description": "A resposta vem em Server-Sent Events (text/event-stream), não em JSON único — o Postman mostra os eventos chegando aos poucos na aba de resposta. Busca contexto nos materiais que esse usuário pode ver (RAG), monta o prompt com o histórico da conversa e transmite a resposta do provider de chat configurado. A mensagem do usuário e a resposta completa do assistente são salvas automaticamente."
+          }
+        },
+        {
+          "name": "Excluir conversa",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/conversations/{{conversation_id}}/"
           }
         }
       ]

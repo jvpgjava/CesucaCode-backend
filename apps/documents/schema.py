@@ -43,7 +43,7 @@ extend_schema_view(
 extend_schema_view(
     get=extend_schema(
         summary="Ver os chunks extraídos de um material",
-        description="Útil para conferir a qualidade da extração/divisão antes da Parte 3 (embeddings).",
+        description="Útil para conferir a qualidade da extração/divisão usada na busca do chat (RAG).",
         tags=DOCUMENTS,
     ),
 )(DocumentChunksView)

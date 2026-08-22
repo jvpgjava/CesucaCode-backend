@@ -39,6 +39,11 @@ class DocumentChunk(TimeStampedModel):
     document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="chunks")
     index = models.PositiveIntegerField()
     content = models.TextField()
+    heading = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Caminho de seções do documento a que o chunk pertence (ex.: '5. Modelo ER > 5.1 Entidades'), quando o formato permite extrair isso.",
+    )
     embedding = VectorField(dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True)
 
     class Meta:

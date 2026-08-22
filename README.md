@@ -351,8 +351,40 @@ saindo por servidor do Gmail tende a cair em spam (falha de SPF/DKIM).
 Upload de material didático (PDF, DOCX, PPTX ou TXT) com extração de texto,
 divisão em pedaços (chunks) e geração de embedding pra cada chunk (ver seção
 "Provedores de IA" abaixo) — a base da busca vetorial usada no chat com IA.
-Processamento é **síncrono**: a resposta do upload já vem com o resultado
-final (`ready` ou `failed`).
+
+Para PDF/DOCX/PPTX, a extração usa o [Docling](https://github.com/docling-project/docling)
+em vez de leitura de texto ingênua: ele entende layout (cabeçalhos, seções,
+tabelas, colunas). A divisão em chunks é feita de forma hierárquica a partir
+dessa estrutura — cada chunk carrega o caminho de seções a que pertence
+(campo `heading`, ex.: `"5. Modelo ER > 5.1 Entidades"`), que também é usado
+como contexto extra na hora de gerar o embedding. TXT não tem estrutura pra
+aproveitar, então segue com divisão simples por parágrafo.
+
+**OCR fica desligado por padrão** (`do_ocr=False`) — os materiais didáticos
+são PDFs gerados digitalmente (têm texto real embutido), não escaneados, e
+OCR é a parte mais cara do processamento (~150-240s → ~40-60s por PDF real
+sem ele). Se algum material for realmente uma imagem escaneada sem texto, a
+extração falha com uma mensagem clara (`processing_error`) em vez de
+demorar minutos à toa; ligar OCR de volta é uma linha em
+`apps/documents/extraction.py` (`PdfPipelineOptions(do_ocr=True)`), se algum
+dia isso virar uma necessidade real. Tabelas usam o modo `FAST` do
+TableFormer (em vez de `ACCURATE`) pelo mesmo motivo de custo.
+
+Processamento é **assíncrono, em background**: o upload responde na hora com
+`status: "processing"` e a extração roda num pool de threads do próprio
+processo Django (`ThreadPoolExecutor`, 2 workers) — sem depender de um
+broker externo (Celery/Redis), o que não se justifica pro volume de uso
+desse app. `GET /api/documents/{id}/` reflete o status real (`processing` →
+`ready`/`failed`) conforme o processamento avança; o frontend faz polling
+desse endpoint enquanto o status é `processing`.
+
+Isso é uma fila em memória do processo, não durável: se o servidor cair ou
+reiniciar (ex.: autoreload do `runserver`) no meio do processamento, aquele
+job se perde e o documento fica preso em `processing` — nesse caso, usar
+`reprocess/` resolve. Se o volume de uploads crescer a ponto disso incomodar
+(ou for rodar com múltiplos processos/workers, onde um pool em memória por
+processo processa menos em paralelo do que parece), o próximo passo natural
+é migrar para uma fila de verdade (Celery + Redis).
 
 **Quem pode o quê:**
 
@@ -370,7 +402,7 @@ Todas as rotas ficam sob `/api/documents/`:
 | POST | `/api/documents/upload/` | Envia um arquivo, extrai texto e divide em chunks | CSAdmin / CSCoordinator (do curso) |
 | GET | `/api/documents/{id}/` | Detalhe de um material | CSAdmin / CSCoordinator (do curso) |
 | DELETE | `/api/documents/{id}/` | Remove um material | CSAdmin / CSCoordinator (do curso) |
-| GET | `/api/documents/{id}/chunks/` | Lista os pedaços de texto extraídos | CSAdmin / CSCoordinator (do curso) |
+| GET | `/api/documents/{id}/chunks/` | Lista os pedaços de texto extraídos (cada um com `heading`) | CSAdmin / CSCoordinator (do curso) |
 | POST | `/api/documents/{id}/reprocess/` | Apaga os chunks e refaz a extração/divisão | CSAdmin / CSCoordinator (do curso) |
 
 Exemplo — CSAdmin envia um PDF:
@@ -381,27 +413,21 @@ curl -X POST http://127.0.0.1:8000/api/documents/upload/ \
   -F "title=Introdução a Algoritmos" -F "course=cc" -F "file=@aula1.pdf"
 ```
 
-Resposta:
+Resposta (imediata — processamento continua em background):
 
 ```json
-{"id":1,"title":"Introdução a Algoritmos","course":"cc","file":"http://127.0.0.1:8000/media/documents/cc/....pdf","status":"ready","processing_error":""}
+{"id":1,"title":"Introdução a Algoritmos","course":"cc","file":"http://127.0.0.1:8000/media/documents/cc/....pdf","status":"processing","processing_error":""}
 ```
 
-Se a extração falhar (ex.: arquivo corrompido, PDF sem texto — como um
-scaneado sem OCR), `status` vem `"failed"` e `processing_error` traz o
-motivo; o material fica salvo mesmo assim e pode ser corrigido/reenviado
-via `reprocess/`.
+Se a extração falhar (ex.: arquivo corrompido ou realmente sem conteúdo
+extraível), `status` vem `"failed"` e `processing_error` traz o motivo; o
+material fica salvo mesmo assim e pode ser corrigido/reenviado via
+`reprocess/`.
 
 Limites do upload: até 20MB, formatos `pdf`/`docx`/`pptx`/`txt` (validado
 antes mesmo de tentar processar). Um `CSCoordinator` só consegue enviar
 material para cursos que ele coordena — tentar para outro curso retorna
 `400`.
-
-> **Nota:** não existe fila assíncrona (Celery/RQ) — o processamento
-> acontece na mesma requisição do upload. Para arquivos muito grandes isso
-> pode demorar; se isso virar um problema real, mover para processamento
-> em background é o próximo passo natural, mas não foi necessário até
-> agora.
 
 ---
 

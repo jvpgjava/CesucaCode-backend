@@ -1,8 +1,14 @@
-from docx import Document as DocxDocument
-from pptx import Presentation
-from pypdf import PdfReader
+import io
+import threading
+
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.types.doc.document import DoclingDocument
+from docling_core.types.io import DocumentStream
 
 SUPPORTED_EXTENSIONS = {"pdf", "docx", "pptx", "txt"}
+DOCLING_EXTENSIONS = {"pdf", "docx", "pptx"}
 
 
 class UnsupportedFileTypeError(Exception):
@@ -15,44 +21,42 @@ def get_extension(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower()
 
 
-def extract_text(file, filename: str) -> str:
+_converter: DocumentConverter | None = None
+_converter_lock = threading.Lock()
+
+
+def _get_converter() -> DocumentConverter:
+    global _converter
+    if _converter is None:
+        # Lock só protege a construção (chamada uma vez); o pool de
+        # processamento tem várias threads e a primeira requisição de cada
+        # uma poderia disparar a inicialização em paralelo sem isso.
+        with _converter_lock:
+            if _converter is None:
+                # Materiais didáticos são PDFs de verdade (texto nativo), não
+                # escaneados — OCR custa a maior parte do tempo de
+                # processamento (~150-240s -> ~40s sem ele num PDF real de
+                # teste) sem trazer nada pra esse caso. Se algum dia entrar
+                # PDF escaneado de verdade, isso falha com uma mensagem clara
+                # ("pode ser uma imagem escaneada sem OCR") em vez de
+                # silenciosamente demorar minutos à toa.
+                pdf_options = PdfPipelineOptions(do_ocr=False)
+                pdf_options.table_structure_options.mode = TableFormerMode.FAST
+                _converter = DocumentConverter(
+                    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)}
+                )
+    return _converter
+
+
+def convert_document(file, filename: str) -> DoclingDocument:
     ext = get_extension(filename)
-    if ext == "pdf":
-        return _extract_pdf(file)
-    if ext == "docx":
-        return _extract_docx(file)
-    if ext == "pptx":
-        return _extract_pptx(file)
-    if ext == "txt":
-        return _extract_txt(file)
-    raise UnsupportedFileTypeError(f"Formato .{ext} não suportado.")
+    if ext not in DOCLING_EXTENSIONS:
+        raise UnsupportedFileTypeError(f"Formato .{ext} não suportado.")
+
+    stream = DocumentStream(name=filename, stream=io.BytesIO(file.read()))
+    result = _get_converter().convert(stream)
+    return result.document
 
 
-def _extract_pdf(file) -> str:
-    reader = PdfReader(file)
-    pages = [page.extract_text() or "" for page in reader.pages]
-    return "\n\n".join(p for p in pages if p.strip())
-
-
-def _extract_docx(file) -> str:
-    doc = DocxDocument(file)
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n\n".join(paragraphs)
-
-
-def _extract_pptx(file) -> str:
-    presentation = Presentation(file)
-    slides = []
-    for slide in presentation.slides:
-        texts = [
-            shape.text_frame.text
-            for shape in slide.shapes
-            if shape.has_text_frame and shape.text_frame.text.strip()
-        ]
-        if texts:
-            slides.append("\n".join(texts))
-    return "\n\n".join(slides)
-
-
-def _extract_txt(file) -> str:
+def extract_txt(file) -> str:
     return file.read().decode("utf-8", errors="ignore")

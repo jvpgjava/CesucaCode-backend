@@ -58,5 +58,5 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
 class DocumentChunkSerializer(serializers.ModelSerializer):
     class Meta:
         model = DocumentChunk
-        fields = ["id", "index", "content"]
+        fields = ["id", "index", "content", "heading"]
         read_only_fields = fields

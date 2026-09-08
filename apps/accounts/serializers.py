@@ -20,10 +20,22 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "email", "full_name", "nickname", "rgm", "role",
+            "id", "email", "full_name", "nickname", "rgm", "role", "is_active",
             "course", "coordinated_courses", "must_change_password", "created_at",
         ]
         read_only_fields = fields
+
+
+class MeUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["nickname"]
+
+
+class AccountUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["nickname", "is_active"]
 
 
 class StudentCreateSerializer(serializers.ModelSerializer):

@@ -248,13 +248,21 @@ Todas as rotas ficam sob `/api/auth/`:
 | POST | `/api/auth/login/` | Login (`identifier` = e-mail ou RGM + `password`) | Público |
 | POST | `/api/auth/login/refresh/` | Renova o `access` token | Público |
 | GET | `/api/auth/me/` | Dados do usuário autenticado | Qualquer autenticado |
+| PATCH | `/api/auth/me/` | Edita o próprio `nickname` (autoatendimento; demais campos são geridos pelo CSAdmin) | Qualquer autenticado |
 | POST | `/api/auth/change-password/` | Troca a própria senha | Qualquer autenticado |
 | GET | `/api/auth/courses/` | Lista os cursos existentes | Qualquer autenticado (com senha em dia) |
-| GET | `/api/auth/accounts/` | Lista alunos e coordenadores (`?search=`, `?role=`) | CSAdmin |
+| GET | `/api/auth/accounts/` | Lista alunos e coordenadores (`?search=`, `?role=`, paginado) | CSAdmin |
+| GET | `/api/auth/accounts/{id}/` | Ver uma conta | CSAdmin |
+| PATCH | `/api/auth/accounts/{id}/` | Edita `nickname` e/ou `is_active` (desativar bloqueia login sem apagar a conta) | CSAdmin |
 | POST | `/api/auth/accounts/students/` | Cria um estudante | CSAdmin |
 | POST | `/api/auth/accounts/students/import/` | Importa estudantes em massa via CSV | CSAdmin |
 | POST | `/api/auth/accounts/coordinators/` | Cria um coordenador | CSAdmin |
 | POST | `/api/auth/accounts/{id}/reset-password/` | Gera uma nova senha aleatória e envia por e-mail | CSAdmin |
+
+`/api/auth/accounts/` e `/api/auth/accounts/{id}/` nunca alcançam contas
+CSAdmin (essas só existem via `createsuperuser`, propositalmente fora da
+API) — tentar editar uma dá `404`, não `403`, pra não confirmar que o id
+existe.
 
 Exemplo — CSAdmin lista contas (busca opcional por nome/e-mail/RGM, filtro opcional por papel):
 
@@ -402,9 +410,10 @@ Todas as rotas ficam sob `/api/documents/`:
 
 | Método | Rota | Descrição | Quem pode |
 |--------|------|-----------|-----------|
-| GET | `/api/documents/` | Lista materiais (escopo por papel/curso) | Qualquer autenticado |
+| GET | `/api/documents/` | Lista materiais (escopo por papel/curso, paginado) | Qualquer autenticado |
 | POST | `/api/documents/upload/` | Envia um arquivo, extrai texto e divide em chunks | CSAdmin / CSCoordinator (do curso) |
 | GET | `/api/documents/{id}/` | Detalhe de um material | CSAdmin / CSCoordinator (do curso) |
+| PATCH | `/api/documents/{id}/` | Edita título/curso (não reenvia o arquivo nem reprocessa) | CSAdmin / CSCoordinator (do curso) |
 | DELETE | `/api/documents/{id}/` | Remove um material | CSAdmin / CSCoordinator (do curso) |
 | GET | `/api/documents/{id}/chunks/` | Lista os pedaços de texto extraídos (cada um com `heading`) | CSAdmin / CSCoordinator (do curso) |
 | POST | `/api/documents/{id}/reprocess/` | Apaga os chunks e refaz a extração/divisão | CSAdmin / CSCoordinator (do curso) |
@@ -520,6 +529,7 @@ Todas as rotas ficam sob `/api/conversations/`:
 | GET | `/api/conversations/` | Lista as minhas conversas |
 | POST | `/api/conversations/` | Cria uma conversa vazia (o título se preenche sozinho na primeira mensagem) |
 | GET | `/api/conversations/{id}/` | Ver uma conversa |
+| PATCH | `/api/conversations/{id}/` | Renomear (`title`) — vazio é aceito, volta a exibir como "Nova conversa" |
 | DELETE | `/api/conversations/{id}/` | Excluir uma conversa |
 | GET | `/api/conversations/{id}/messages/` | Histórico completo de mensagens |
 | POST | `/api/conversations/{id}/messages/send/` | Enviar uma mensagem — resposta em streaming |

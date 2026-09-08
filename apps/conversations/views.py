@@ -26,7 +26,7 @@ class ConversationListCreateView(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-class ConversationDetailView(generics.RetrieveDestroyAPIView):
+class ConversationDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ConversationSerializer
 
     def get_queryset(self):

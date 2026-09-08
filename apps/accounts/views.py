@@ -10,10 +10,12 @@ from . import services
 from .models import Course, User
 from .permissions import IsCSAdmin, PasswordIsCurrent
 from .serializers import (
+    AccountUpdateSerializer,
     ChangePasswordSerializer,
     CoordinatorCreateSerializer,
     CourseSerializer,
     LoginSerializer,
+    MeUpdateSerializer,
     StudentCreateSerializer,
     UserSerializer,
 )
@@ -46,6 +48,13 @@ class MeView(generics.RetrieveAPIView):
     def get_object(self):
         return self.request.user
 
+    def patch(self, request, *args, **kwargs):
+        user = self.get_object()
+        serializer = MeUpdateSerializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(UserSerializer(user).data)
+
 
 class ChangePasswordView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -62,12 +71,16 @@ class CourseListView(generics.ListAPIView):
     serializer_class = CourseSerializer
 
 
+def get_manageable_accounts_queryset():
+    return User.objects.exclude(role=User.Role.CS_ADMIN).select_related("course")
+
+
 class AccountListView(generics.ListAPIView):
     serializer_class = UserSerializer
     permission_classes = [IsCSAdmin, PasswordIsCurrent]
 
     def get_queryset(self):
-        queryset = User.objects.exclude(role=User.Role.CS_ADMIN).select_related("course")
+        queryset = get_manageable_accounts_queryset()
 
         role = self.request.query_params.get("role")
         if role:
@@ -82,6 +95,21 @@ class AccountListView(generics.ListAPIView):
             )
 
         return queryset
+
+
+class AccountDetailView(generics.RetrieveAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [IsCSAdmin, PasswordIsCurrent]
+
+    def get_queryset(self):
+        return get_manageable_accounts_queryset()
+
+    def patch(self, request, *args, **kwargs):
+        account = self.get_object()
+        serializer = AccountUpdateSerializer(account, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(UserSerializer(account).data)
 
 
 class CreateStudentView(generics.CreateAPIView):

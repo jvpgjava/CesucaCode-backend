@@ -55,6 +55,21 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
         return services.create_document(uploaded_by=request.user, **validated_data)
 
 
+class DocumentUpdateSerializer(serializers.ModelSerializer):
+    course = serializers.SlugRelatedField(slug_field="code", queryset=Course.objects.all())
+
+    class Meta:
+        model = Document
+        fields = ["id", "title", "course"]
+        read_only_fields = ["id"]
+
+    def validate_course(self, course):
+        user = self.context["request"].user
+        if user.role == User.Role.CS_COORDINATOR and not user.coordinated_courses.filter(id=course.id).exists():
+            raise serializers.ValidationError("Você só pode mover materiais para cursos que coordena.")
+        return course
+
+
 class DocumentChunkSerializer(serializers.ModelSerializer):
     class Meta:
         model = DocumentChunk

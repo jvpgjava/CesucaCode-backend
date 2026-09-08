@@ -24,6 +24,13 @@ extend_schema_view(
 
 extend_schema_view(
     get=extend_schema(summary="Ver uma conversa", tags=CONVERSATIONS),
+    patch=extend_schema(
+        summary="Renomear uma conversa",
+        description="Atualiza só o título. Título vazio é aceito (volta a mostrar como "
+        "'Nova conversa' no cliente).",
+        tags=CONVERSATIONS,
+    ),
+    put=extend_schema(summary="Renomear uma conversa", tags=CONVERSATIONS),
     delete=extend_schema(summary="Excluir uma conversa", tags=CONVERSATIONS),
 )(ConversationDetailView)
 

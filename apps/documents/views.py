@@ -7,7 +7,12 @@ from apps.accounts.models import User
 from . import services
 from .models import Document
 from .permissions import CanManageDocuments
-from .serializers import DocumentChunkSerializer, DocumentSerializer, DocumentUploadSerializer
+from .serializers import (
+    DocumentChunkSerializer,
+    DocumentSerializer,
+    DocumentUpdateSerializer,
+    DocumentUploadSerializer,
+)
 
 
 def get_documents_queryset(user):
@@ -37,6 +42,15 @@ class DocumentDetailView(generics.RetrieveDestroyAPIView):
 
     def get_queryset(self):
         return get_documents_queryset(self.request.user)
+
+    def patch(self, request, *args, **kwargs):
+        document = self.get_object()
+        serializer = DocumentUpdateSerializer(
+            document, data=request.data, partial=True, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(DocumentSerializer(document, context={"request": request}).data)
 
 
 class DocumentChunksView(generics.ListAPIView):

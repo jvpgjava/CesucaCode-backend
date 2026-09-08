@@ -1,5 +1,6 @@
 from drf_spectacular.utils import extend_schema, extend_schema_view
 
+from .serializers import DocumentUpdateSerializer
 from .views import (
     DocumentChunksView,
     DocumentDetailView,
@@ -25,11 +26,11 @@ extend_schema_view(
     post=extend_schema(
         summary="Enviar material didático",
         description=(
-            "Envia um arquivo (PDF, DOCX, PPTX ou TXT), extrai o texto e divide "
-            "em pedaços (chunks) prontos para indexação. Processamento é "
-            "síncrono — a resposta já vem com o status final (`ready` ou "
-            "`failed`, com o erro em `processing_error`). Restrito a CSAdmin "
-            "(qualquer curso) e CSCoordinator (só dos cursos que coordena)."
+            "Envia um arquivo (PDF, DOCX, PPTX ou TXT) e extrai/divide em pedaços "
+            "(chunks) em background. A resposta já volta com `status: \"processing\"`; "
+            "consulte `GET /{id}/` para acompanhar até virar `ready` ou `failed` "
+            "(com o erro em `processing_error`). Restrito a CSAdmin (qualquer "
+            "curso) e CSCoordinator (só dos cursos que coordena)."
         ),
         tags=DOCUMENTS,
     ),
@@ -37,6 +38,13 @@ extend_schema_view(
 
 extend_schema_view(
     get=extend_schema(summary="Ver um material didático", tags=DOCUMENTS),
+    patch=extend_schema(
+        summary="Editar título/curso de um material",
+        description="Não reenvia o arquivo nem reprocessa os chunks — só metadados. "
+        "Para reprocessar o conteúdo, use o endpoint de reprocessar.",
+        request=DocumentUpdateSerializer,
+        tags=DOCUMENTS,
+    ),
     delete=extend_schema(summary="Remover um material didático", tags=DOCUMENTS),
 )(DocumentDetailView)
 

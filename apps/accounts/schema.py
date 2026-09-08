@@ -7,7 +7,9 @@ from drf_spectacular.utils import (
 from rest_framework import serializers
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from .serializers import AccountUpdateSerializer, MeUpdateSerializer
 from .views import (
+    AccountDetailView,
     AccountListView,
     BulkImportStudentsView,
     ChangePasswordView,
@@ -43,6 +45,14 @@ extend_schema_view(
 
 extend_schema_view(
     get=extend_schema(summary="Ver meus dados", tags=AUTH),
+    patch=extend_schema(
+        summary="Editar meu apelido",
+        description="Autoatendimento — só o `nickname` pode ser editado pelo "
+        "próprio usuário. Outros dados (nome, e-mail, RGM, curso, papel) são "
+        "gerenciados pelo CSAdmin.",
+        request=MeUpdateSerializer,
+        tags=AUTH,
+    ),
 )(MeView)
 
 extend_schema_view(
@@ -69,6 +79,22 @@ extend_schema_view(
         tags=ACCOUNTS,
     ),
 )(AccountListView)
+
+extend_schema_view(
+    get=extend_schema(summary="Ver uma conta", tags=ACCOUNTS),
+    patch=extend_schema(
+        summary="Editar apelido / ativar-desativar uma conta",
+        description=(
+            "Edita `nickname` e/ou `is_active`. Desativar impede login "
+            "(`is_active=False`); não apaga a conta nem seus dados. Não "
+            "reatribui curso/papel — para isso, recrie a conta. Restrito a "
+            "CSAdmin, e não alcança outras contas CSAdmin (essas só existem "
+            "via `createsuperuser`)."
+        ),
+        request=AccountUpdateSerializer,
+        tags=ACCOUNTS,
+    ),
+)(AccountDetailView)
 
 extend_schema_view(
     post=extend_schema(

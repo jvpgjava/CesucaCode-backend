@@ -4,8 +4,11 @@ from .views import (
     ConversationDetailView,
     ConversationListCreateView,
     ConversationMessagesView,
+    MessageFeedbackView,
     SendMessageView,
+    SuggestionsView,
 )
+from .serializers import MessageFeedbackSerializer
 
 CONVERSATIONS = ["Conversas (Chat)"]
 
@@ -55,3 +58,24 @@ extend_schema_view(
         tags=CONVERSATIONS,
     ),
 )(SendMessageView)
+
+extend_schema_view(
+    get=extend_schema(
+        summary="Sugestões de primeira mensagem",
+        description=(
+            "Perguntas prontas pro usuário clicar: algumas fixas (grade curricular, "
+            "disciplinas, materiais disponíveis) e outras geradas a partir dos materiais "
+            "prontos que ele pode ver."
+        ),
+        tags=CONVERSATIONS,
+    ),
+)(SuggestionsView)
+
+extend_schema_view(
+    patch=extend_schema(
+        summary="Avaliar uma resposta (👍/👎)",
+        description="`rating`: 1 = útil, -1 = não útil, null = remove a avaliação. Só mensagens do assistente.",
+        request=MessageFeedbackSerializer,
+        tags=CONVERSATIONS,
+    ),
+)(MessageFeedbackView)

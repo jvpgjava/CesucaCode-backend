@@ -14,7 +14,8 @@
     { "key": "refresh_token", "value": "", "type": "string" },
     { "key": "student_id", "value": "", "type": "string" },
     { "key": "document_id", "value": "", "type": "string" },
-    { "key": "conversation_id", "value": "", "type": "string" }
+    { "key": "conversation_id", "value": "", "type": "string" },
+    { "key": "message_id", "value": "", "type": "string" }
   ],
   "item": [
     {
@@ -116,6 +117,29 @@
           }
         },
         {
+          "name": "Editar meu perfil (apelido e foto)",
+          "request": {
+            "method": "PATCH",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "nickname",
+                  "value": "Meu apelido",
+                  "type": "text"
+                },
+                {
+                  "key": "avatar",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            },
+            "url": "{{base_url}}/api/auth/me/",
+            "description": "Autoatendimento: só 'nickname' e 'avatar' (foto de perfil, imagem opcional, tamanho máximo validado no servidor) podem ser alterados. Envie só o que quiser mudar."
+          }
+        },
+        {
           "name": "Trocar minha senha",
           "request": {
             "method": "POST",
@@ -202,6 +226,32 @@
           }
         },
         {
+          "name": "Ver uma conta",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/auth/accounts/{{student_id}}/",
+            "description": "Requer CSAdmin. Usa o student_id salvo por 'Criar estudante'."
+          }
+        },
+        {
+          "name": "Editar conta (apelido / ativar-desativar)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nickname\": \"Novo apelido\",\n  \"is_active\": false\n}"
+            },
+            "url": "{{base_url}}/api/auth/accounts/{{student_id}}/",
+            "description": "Requer CSAdmin. Só 'nickname' e 'is_active' podem ser alterados; desativar impede o login da pessoa sem apagar seus dados."
+          }
+        },
+        {
           "name": "Resetar senha de um usuário",
           "request": {
             "method": "POST",
@@ -247,7 +297,7 @@
               ]
             },
             "url": "{{base_url}}/api/documents/upload/",
-            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). No campo 'file', selecione docs-collections/sample_material.txt (ou um PDF/DOCX/PPTX seu). Processamento é síncrono — a resposta já vem com status 'ready' ou 'failed'."
+            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). No campo 'file', selecione docs-collections/sample_material.txt (ou um PDF/DOCX/PPTX seu). O processamento é assíncrono — a resposta já vem com status 'processing'; consulte 'Ver detalhe de um material' até virar 'ready' (ou 'failed')."
           },
           "event": [
             {
@@ -270,6 +320,24 @@
             "method": "GET",
             "url": "{{base_url}}/api/documents/{{document_id}}/",
             "description": "Requer token de CSAdmin ou CSCoordinator (do curso). Usa o document_id salvo por 'Enviar material didático'."
+          }
+        },
+        {
+          "name": "Editar material (título / curso)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Novo título do material\",\n  \"course\": \"cc\"\n}"
+            },
+            "url": "{{base_url}}/api/documents/{{document_id}}/",
+            "description": "Requer CSAdmin ou CSCoordinator (do curso). Só edita os metadados — não reenvia o arquivo nem reprocessa os trechos (para isso use 'Reprocessar material')."
           }
         },
         {
@@ -326,6 +394,14 @@
           ]
         },
         {
+          "name": "Sugestões de mensagens prontas",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/conversations/suggestions/",
+            "description": "Devolve {\"suggestions\": [...]}: perguntas fixas (grade curricular, disciplinas, materiais disponíveis) mais perguntas geradas a partir dos materiais mais recentes que ESTE usuário pode ver (mesmo escopo por papel/curso do RAG)."
+          }
+        },
+        {
           "name": "Listar minhas conversas",
           "request": {
             "method": "GET",
@@ -338,6 +414,24 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/api/conversations/{{conversation_id}}/"
+          }
+        },
+        {
+          "name": "Renomear conversa",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Dúvidas sobre banco de dados\"\n}"
+            },
+            "url": "{{base_url}}/api/conversations/{{conversation_id}}/",
+            "description": "Título vazio é aceito: a conversa volta a aparecer como 'Nova conversa'."
           }
         },
         {
@@ -357,7 +451,25 @@
               "raw": "{\n  \"content\": \"O que esse material fala sobre recursão?\"\n}"
             },
             "url": "{{base_url}}/api/conversations/{{conversation_id}}/messages/send/",
-            "description": "A resposta vem em Server-Sent Events (text/event-stream), não em JSON único — o Postman mostra os eventos chegando aos poucos na aba de resposta. Busca contexto nos materiais que esse usuário pode ver (RAG), monta o prompt com o histórico da conversa e transmite a resposta do provider de chat configurado. A mensagem do usuário e a resposta completa do assistente são salvas automaticamente."
+            "description": "A resposta vem em Server-Sent Events (text/event-stream), não em JSON único — o Postman mostra os eventos chegando aos poucos na aba de resposta. Busca contexto nos materiais que esse usuário pode ver (RAG), monta o prompt com o histórico da conversa e transmite a resposta do provider de chat configurado. A mensagem do usuário e a resposta completa do assistente são salvas automaticamente. A S.O.F.I.A só responde sobre computação dos cursos e com base nos materiais: fora do escopo ela recusa, e informação institucional que não estiver nos materiais (grade, datas, contatos) ela diz que não encontrou."
+          }
+        },
+        {
+          "name": "Avaliar resposta (👍 / 👎)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rating\": 1\n}"
+            },
+            "url": "{{base_url}}/api/conversations/{{conversation_id}}/messages/{{message_id}}/feedback/",
+            "description": "'rating': 1 (👍), -1 (👎) ou null (remove a avaliação). Só vale para mensagens do assistente da própria conversa. Pegue o message_id em 'Ver histórico de mensagens' (cada mensagem traz 'feedback')."
           }
         },
         {

@@ -516,11 +516,80 @@ mais o histórico da conversa, e manda pro provider de chat configurado
 (`LLM_PROVIDER`). Se não achar nenhum material relevante, o modelo é
 instruído a dizer isso em vez de inventar uma resposta.
 
-**System prompt:** fica em `apps/conversations/prompts/system_prompt.md`,
-não hardcoded no Python — dá pra editar o texto/tom sem tocar em código, e
-o efeito aparece na próxima mensagem sem precisar reiniciar o servidor. Pra
-usar um arquivo em outro lugar, configure `SYSTEM_PROMPT_PATH` no `.env`
-(aceita caminho relativo à raiz do projeto ou absoluto).
+**System prompt e guardrails:** ficam em arquivos `.md` na pasta
+`apps/conversations/prompts/sofia/` — não hardcoded no Python. Os arquivos são
+lidos em ordem alfabética (daí os prefixos) e concatenados, então cada tema é
+um arquivo que dá pra editar/auditar separado, sem reiniciar o servidor (a
+mudança vale na próxima mensagem). Pra adicionar uma regra nova, crie outro
+`NN-tema.md`. `SYSTEM_PROMPT_PATH` no `.env` aceita uma pasta ou um único
+arquivo, relativo à raiz do projeto ou absoluto.
+
+| Arquivo | Assunto |
+|---|---|
+| `00-identidade.md` | Quem é a S.O.F.I.A, idioma, regras valem em todo turno |
+| `10-escopo.md` | Só computação de CC/ADS; como recusar; pretextos que não mudam nada |
+| `20-materiais-e-fontes.md` | Citar `(Fonte: ...)`, aviso de "conhecimento geral", não inventar dados da instituição |
+| `25-anti-alucinacao.md` | Nunca inventar livros/páginas/datas/números; "não sei" > chute; sem acesso a internet/notas |
+| `30-pedagogia.md` | Guiar em vez de entregar trabalho pronto |
+| `40-seguranca.md` | Prompt injection, personas, vazamento do prompt, malware |
+| `50-idiomas-e-ofuscacao.md` | Responder em português; binário/base64/invertido/leetspeak recebem as mesmas regras |
+
+Além do prompt, há duas proteções em código (`apps/conversations/services.py`):
+
+1. *Filtro de relevância* — só entram no contexto os trechos com distância de
+   cosseno ≤ `RAG_MAX_DISTANCE` (padrão `0.30`, no `.env`). Se nenhum passar, o
+   modelo é avisado de que nada nos materiais foi relevante e, se a pergunta
+   for de computação, responde com conhecimento geral **avisando que não veio
+   dos materiais**. Ele decide *se há material relevante*, não *se o assunto é
+   do curso* (nas medições, computação geral e assuntos aleatórios ficam na
+   mesma faixa de distância — o escopo é responsabilidade do prompt). Foi
+   calibrado com pouco material; com mais conteúdo enviado, reavalie.
+2. *Recusa do provedor* — quando o filtro de conteúdo do provedor do LLM barra
+   a requisição (comum com instruções escondidas em binário/base64/hex), o chat
+   responde uma recusa amigável em vez de erro, e esse par pergunta+recusa é
+   omitido do histórico enviado nos turnos seguintes (senão a mensagem barrada
+   travaria a conversa inteira).
+
+3. *Perfil do usuário* — o system prompt recebe, além das regras, um bloco
+   curto com o papel e o curso de quem está perguntando (só como informação,
+   nunca como instrução), pra adaptar a resposta ao curso.
+4. *Limite de histórico* — só as últimas `CHAT_MAX_HISTORY_MESSAGES` mensagens
+   (padrão `12`) vão pro modelo. Isso não limita o modelo em si, só o quanto
+   da conversa antiga é reenviado a cada turno.
+5. *Modo estrito* — com `CHAT_ALLOW_GENERAL_KNOWLEDGE=False`, sem material
+   relevante a S.O.F.I.A diz que não encontrou nos materiais em vez de
+   responder com conhecimento geral. Informação da instituição (grade,
+   disciplinas, datas, créditos, contatos) **sempre** vem só dos materiais,
+   independente dessa opção.
+
+Não há limite de quantidade de mensagens por usuário nem limite imposto ao
+modelo (tokens, temperatura etc.) — só o teto de histórico acima, que é
+janela de contexto.
+
+O prompt reduz bastante, mas não elimina, a chance de burlar as regras com
+pedidos elaborados — reveja os arquivos conforme surgirem casos novos.
+
+**Suíte de regressão dos guardrails:** os casos ficam em
+`apps/conversations/guardrail_cases.py` (recusas, pretextos, injeção,
+vazamento de prompt, ofuscação, alucinação, perguntas legítimas...) e são
+executados de verdade contra o LLM configurado:
+
+```bash
+python manage.py test_guardrails                       # todos os casos
+python manage.py test_guardrails --only recusa         # só um tipo (recusa, resposta, sem_info, cautela, aviso_geral)
+python manage.py test_guardrails --name "receita"      # casos cujo nome contém o texto
+python manage.py test_guardrails --user email@x.com    # roda como esse usuário (define o curso/materiais)
+python manage.py test_guardrails --retries 2           # tenta de novo casos que falharem (o LLM varia)
+```
+
+Rode depois de mexer nos arquivos de prompt ou trocar de modelo. Os casos de
+"sem_info" (grade, disciplinas...) assumem que os materiais enviados não trazem
+essa informação; se trouxerem, ajuste-os.
+
+**Sugestões e feedback:** a tela inicial do chat mostra sugestões prontas
+(grade curricular, disciplinas, materiais disponíveis, e perguntas baseadas nos
+materiais mais recentes que o usuário pode ver). Cada resposta pode ser
+avaliada com 👍/👎, e o chat exibe um aviso de que a IA pode errar.
 
 Todas as rotas ficam sob `/api/conversations/`:
 
@@ -533,6 +602,8 @@ Todas as rotas ficam sob `/api/conversations/`:
 | DELETE | `/api/conversations/{id}/` | Excluir uma conversa |
 | GET | `/api/conversations/{id}/messages/` | Histórico completo de mensagens |
 | POST | `/api/conversations/{id}/messages/send/` | Enviar uma mensagem — resposta em streaming |
+| GET | `/api/conversations/suggestions/` | Sugestões de perguntas prontas, de acordo com os materiais que eu posso ver |
+| PATCH | `/api/conversations/{id}/messages/{message_id}/feedback/` | Avaliar uma resposta: `{"rating": 1}` (👍), `{"rating": -1}` (👎) ou `null` (remove) |
 
 O envio de mensagem **não devolve um JSON único** — a resposta vem em
 tempo real via [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)

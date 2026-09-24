@@ -46,10 +46,11 @@ extend_schema_view(
 extend_schema_view(
     get=extend_schema(summary="Ver meus dados", tags=AUTH),
     patch=extend_schema(
-        summary="Editar meu apelido",
-        description="Autoatendimento — só o `nickname` pode ser editado pelo "
-        "próprio usuário. Outros dados (nome, e-mail, RGM, curso, papel) são "
-        "gerenciados pelo CSAdmin.",
+        summary="Editar meu apelido e/ou foto de perfil",
+        description="Autoatendimento — só `nickname` e `avatar` podem ser "
+        "editados pelo próprio usuário (multipart/form-data para enviar "
+        "imagem). Outros dados (nome, e-mail, RGM, curso, papel) são "
+        "gerenciados pelo CSAdmin. Imagem até 5MB.",
         request=MeUpdateSerializer,
         tags=AUTH,
     ),

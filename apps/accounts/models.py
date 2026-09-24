@@ -32,6 +32,9 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     email = models.EmailField(unique=True)
     full_name = models.CharField(max_length=150)
     nickname = models.CharField(max_length=50, blank=True, help_text="Apelido, opcional.")
+    avatar = models.ImageField(
+        upload_to="avatars/", null=True, blank=True, help_text="Foto de perfil, opcional."
+    )
     rgm = models.CharField(
         max_length=20,
         unique=True,

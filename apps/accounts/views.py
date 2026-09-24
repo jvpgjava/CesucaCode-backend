@@ -50,10 +50,12 @@ class MeView(generics.RetrieveAPIView):
 
     def patch(self, request, *args, **kwargs):
         user = self.get_object()
-        serializer = MeUpdateSerializer(user, data=request.data, partial=True)
+        serializer = MeUpdateSerializer(
+            user, data=request.data, partial=True, context={"request": request}
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(UserSerializer(user).data)
+        return Response(UserSerializer(user, context={"request": request}).data)
 
 
 class ChangePasswordView(APIView):
@@ -109,7 +111,7 @@ class AccountDetailView(generics.RetrieveAPIView):
         serializer = AccountUpdateSerializer(account, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(UserSerializer(account).data)
+        return Response(UserSerializer(account, context={"request": request}).data)
 
 
 class CreateStudentView(generics.CreateAPIView):

@@ -3,11 +3,17 @@ import logging
 
 from django.http import StreamingHttpResponse
 from rest_framework import generics
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import services
-from .models import Conversation
-from .serializers import ConversationSerializer, MessageSerializer, SendMessageSerializer
+from .models import Conversation, Message
+from .serializers import (
+    ConversationSerializer,
+    MessageFeedbackSerializer,
+    MessageSerializer,
+    SendMessageSerializer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,24 @@ class ConversationMessagesView(generics.ListAPIView):
             get_conversations_queryset(self.request.user), pk=self.kwargs["pk"]
         )
         return conversation.messages.all()
+
+
+class SuggestionsView(APIView):
+    def get(self, request):
+        return Response({"suggestions": services.build_suggestions(request.user)})
+
+
+class MessageFeedbackView(APIView):
+    def patch(self, request, pk, message_id):
+        conversation = generics.get_object_or_404(get_conversations_queryset(request.user), pk=pk)
+        message = generics.get_object_or_404(
+            conversation.messages.filter(role=Message.Role.ASSISTANT), pk=message_id
+        )
+        serializer = MessageFeedbackSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        message.feedback = serializer.validated_data["rating"]
+        message.save(update_fields=["feedback", "updated_at"])
+        return Response(MessageSerializer(message).data)
 
 
 class SendMessageView(APIView):

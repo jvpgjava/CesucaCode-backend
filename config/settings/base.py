@@ -97,9 +97,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_THROTTLE_RATES": {
-        "login": "10/min",
-    },
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min"},
 }
 
 EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
@@ -144,8 +142,23 @@ ABACUSAI_API_KEY = env("ABACUSAI_API_KEY", default="")
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://localhost:11434")
 
 _system_prompt_path = Path(
-    env("SYSTEM_PROMPT_PATH", default="apps/conversations/prompts/system_prompt.md")
+    env("SYSTEM_PROMPT_PATH", default="apps/conversations/prompts/sofia")
 )
 SYSTEM_PROMPT_PATH = str(
     _system_prompt_path if _system_prompt_path.is_absolute() else BASE_DIR / _system_prompt_path
 )
+
+# Distância de cosseno máxima (0 = idêntico, ~1 = sem relação) pra um trecho dos
+# materiais ser considerado relevante e entrar no contexto do chat. Acima disso,
+# o trecho é descartado em vez de virar "contexto" de uma pergunta que não tem
+# nada a ver com ele.
+RAG_MAX_DISTANCE = env.float("RAG_MAX_DISTANCE", default=0.30)
+
+# Quantas mensagens anteriores da conversa vão pro modelo a cada turno. Sem teto,
+# conversas longas ficam cada vez mais caras/lentas e estouram o contexto.
+CHAT_MAX_HISTORY_MESSAGES = env.int("CHAT_MAX_HISTORY_MESSAGES", default=12)
+
+# Se nenhum trecho dos materiais for relevante: True = pode explicar conceitos
+# gerais de computação (avisando que não veio dos materiais); False = modo
+# estrito, responde só que não encontrou nos materiais enviados.
+CHAT_ALLOW_GENERAL_KNOWLEDGE = env.bool("CHAT_ALLOW_GENERAL_KNOWLEDGE", default=True)

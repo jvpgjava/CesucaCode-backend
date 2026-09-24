@@ -26,6 +26,12 @@ class Message(TimeStampedModel):
     )
     role = models.CharField(max_length=20, choices=Role.choices)
     content = models.TextField()
+    feedback = models.SmallIntegerField(
+        null=True,
+        blank=True,
+        choices=[(1, "Útil"), (-1, "Não útil")],
+        help_text="Avaliação do usuário sobre a resposta (só em mensagens do assistente).",
+    )
 
     class Meta:
         ordering = ["created_at"]

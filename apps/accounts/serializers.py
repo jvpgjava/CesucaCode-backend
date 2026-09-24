@@ -20,16 +20,24 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "email", "full_name", "nickname", "rgm", "role", "is_active",
+            "id", "email", "full_name", "nickname", "avatar", "rgm", "role", "is_active",
             "course", "coordinated_courses", "must_change_password", "created_at",
         ]
         read_only_fields = fields
 
 
+MAX_AVATAR_SIZE_MB = 5
+
+
 class MeUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["nickname"]
+        fields = ["nickname", "avatar"]
+
+    def validate_avatar(self, avatar):
+        if avatar and avatar.size > MAX_AVATAR_SIZE_MB * 1024 * 1024:
+            raise serializers.ValidationError(f"Imagem maior que {MAX_AVATAR_SIZE_MB}MB.")
+        return avatar
 
 
 class AccountUpdateSerializer(serializers.ModelSerializer):

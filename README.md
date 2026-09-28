@@ -360,17 +360,19 @@ saindo por servidor do Gmail tende a cair em spam (falha de SPF/DKIM).
 
 ## Materiais didáticos (Documents)
 
-Upload de material didático (PDF, DOCX, PPTX ou TXT) com extração de texto,
+Upload de material didático (PDF, DOCX, PPTX, MD ou TXT) com extração de texto,
 divisão em pedaços (chunks) e geração de embedding pra cada chunk (ver seção
 "Provedores de IA" abaixo) — a base da busca vetorial usada no chat com IA.
 
-Para PDF/DOCX/PPTX, a extração usa o [Docling](https://github.com/docling-project/docling)
+Para PDF/DOCX/PPTX/MD, a extração usa o [Docling](https://github.com/docling-project/docling)
 em vez de leitura de texto ingênua: ele entende layout (cabeçalhos, seções,
 tabelas, colunas). A divisão em chunks é feita de forma hierárquica a partir
 dessa estrutura — cada chunk carrega o caminho de seções a que pertence
 (campo `heading`, ex.: `"5. Modelo ER > 5.1 Entidades"`), que também é usado
-como contexto extra na hora de gerar o embedding. TXT não tem estrutura pra
-aproveitar, então segue com divisão simples por parágrafo.
+como contexto extra na hora de gerar o embedding. **Markdown (`.md`)** passa
+pelo Docling também: os títulos (`#`, `##`...) viram o `heading` de cada chunk,
+como nos PDFs — por isso é melhor enviar `.md` do que renomear pra `.txt`. TXT
+não tem estrutura pra aproveitar, então segue com divisão simples por parágrafo.
 
 **OCR fica desligado por padrão** (`do_ocr=False`) — os materiais didáticos
 são PDFs gerados digitalmente (têm texto real embutido), não escaneados, e
@@ -398,38 +400,46 @@ job se perde e o documento fica preso em `processing` — nesse caso, usar
 processo processa menos em paralelo do que parece), o próximo passo natural
 é migrar para uma fila de verdade (Celery + Redis).
 
+**Um material pode valer para mais de um curso.** No upload e na edição
+informe `courses` (lista de códigos, ex.: `cc`, `ads`; ao menos um). Um material
+marcado para CC e ADS aparece para os alunos, coordenadores e busca do chat
+dos dois cursos — não precisa enviar duas vezes.
+
 **Quem pode o quê:**
 
-| Papel | Upload / editar | Ver |
-|---|---|---|
-| **CSAdmin** | Qualquer curso | Todos os materiais |
-| **CSCoordinator** | Só dos cursos que coordena | Só dos cursos que coordena |
-| **CSStudent** | Não pode | Só do próprio curso |
+| Papel | Upload / editar | Excluir | Ver |
+|---|---|---|---|
+| **CSAdmin** | Qualquer curso | Qualquer material | Todos os materiais |
+| **CSCoordinator** | Só para cursos que coordena; edita/reprocessa se coordenar *algum* curso do material, sem conseguir remover os cursos que não coordena | Só se coordenar **todos** os cursos do material (num material compartilhado com curso que não coordena, ele vê e edita, mas não exclui — `403`) | Materiais que incluam algum curso que coordena |
+| **CSStudent** | Não pode | Não pode | Materiais que incluam o próprio curso |
+
+A resposta de cada material traz `courses` (lista de cursos) e `can_delete`
+(se o usuário logado pode excluí-lo).
 
 Todas as rotas ficam sob `/api/documents/`:
 
 | Método | Rota | Descrição | Quem pode |
 |--------|------|-----------|-----------|
-| GET | `/api/documents/` | Lista materiais (escopo por papel/curso, paginado) | Qualquer autenticado |
-| POST | `/api/documents/upload/` | Envia um arquivo, extrai texto e divide em chunks | CSAdmin / CSCoordinator (do curso) |
+| GET | `/api/documents/` | Lista materiais (escopo por papel/cursos, paginado) | Qualquer autenticado |
+| POST | `/api/documents/upload/` | Envia um arquivo para um ou mais cursos, extrai texto e divide em chunks | CSAdmin / CSCoordinator (dos cursos que coordena) |
 | GET | `/api/documents/{id}/` | Detalhe de um material | CSAdmin / CSCoordinator (do curso) |
-| PATCH | `/api/documents/{id}/` | Edita título/curso (não reenvia o arquivo nem reprocessa) | CSAdmin / CSCoordinator (do curso) |
-| DELETE | `/api/documents/{id}/` | Remove um material | CSAdmin / CSCoordinator (do curso) |
+| PATCH | `/api/documents/{id}/` | Edita título/cursos (não reenvia o arquivo nem reprocessa) | CSAdmin / CSCoordinator (de algum curso do material) |
+| DELETE | `/api/documents/{id}/` | Remove um material | CSAdmin / CSCoordinator (de todos os cursos do material) |
 | GET | `/api/documents/{id}/chunks/` | Lista os pedaços de texto extraídos (cada um com `heading`) | CSAdmin / CSCoordinator (do curso) |
 | POST | `/api/documents/{id}/reprocess/` | Apaga os chunks e refaz a extração/divisão | CSAdmin / CSCoordinator (do curso) |
 
-Exemplo — CSAdmin envia um PDF:
+Exemplo — CSAdmin envia um PDF válido para CC e ADS (repita o campo `courses`):
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/documents/upload/ \
   -H "Authorization: Bearer <token>" \
-  -F "title=Introdução a Algoritmos" -F "course=cc" -F "file=@aula1.pdf"
+  -F "title=Introdução a Algoritmos" -F "courses=cc" -F "courses=ads" -F "file=@aula1.pdf"
 ```
 
 Resposta (imediata — processamento continua em background):
 
 ```json
-{"id":1,"title":"Introdução a Algoritmos","course":"cc","file":"http://127.0.0.1:8000/media/documents/cc/....pdf","status":"processing","processing_error":""}
+{"id":1,"title":"Introdução a Algoritmos","courses":["cc","ads"],"file":"http://127.0.0.1:8000/media/documents/....pdf","status":"processing","processing_error":""}
 ```
 
 Se a extração falhar (ex.: arquivo corrompido ou realmente sem conteúdo
@@ -528,8 +538,10 @@ arquivo, relativo à raiz do projeto ou absoluto.
 |---|---|
 | `00-identidade.md` | Quem é a S.O.F.I.A, idioma, regras valem em todo turno |
 | `10-escopo.md` | Só computação de CC/ADS; como recusar; pretextos que não mudam nada |
-| `20-materiais-e-fontes.md` | Citar `(Fonte: ...)`, aviso de "conhecimento geral", não inventar dados da instituição |
-| `25-anti-alucinacao.md` | Nunca inventar livros/páginas/datas/números; "não sei" > chute; sem acesso a internet/notas |
+| `20-materiais-e-fontes.md` | Regras internas de fontes: informação da instituição só do contexto; aviso de "explicação geral" em conceitos técnicos |
+| `22-como-falar-das-fontes.md` | **Nunca expor o funcionamento interno** ("materiais enviados", "trechos", "fragmentado"...): quando não tem a informação, diz que não tem confirmada e orienta a conferir com a coordenação/secretaria/professor; **não cita fontes** (sem `(Fonte: ...)`, títulos nem links) |
+| `27-caminho-de-estudo.md` | Perguntas de grade/disciplinas: agrupa as disciplinas do curso em fases de estudo e sugere a ordem, usando as referências externas da pesquisa na web só como apoio (nunca como matriz oficial da Cesuca) |
+| `25-anti-alucinacao.md` | Nunca inventar livros/páginas/datas/números; grade/semestre/ordem só quando explícitos; "não sei" > chute; sem acesso a internet/notas |
 | `30-pedagogia.md` | Guiar em vez de entregar trabalho pronto |
 | `40-seguranca.md` | Prompt injection, personas, vazamento do prompt, malware |
 | `50-idiomas-e-ofuscacao.md` | Responder em português; binário/base64/invertido/leetspeak recebem as mesmas regras |
@@ -562,6 +574,21 @@ Além do prompt, há duas proteções em código (`apps/conversations/services.p
    disciplinas, datas, créditos, contatos) **sempre** vem só dos materiais,
    independente dessa opção.
 
+6. *Pesquisa na web para grade e disciplinas* — em perguntas de grade
+   curricular, disciplinas, ordem para cursar ou "por onde seguir" (detectadas
+   por `web_search.is_curriculum_question`), o backend pesquisa na web (biblioteca
+   `ddgs`, DuckDuckGo, **sem chave**) e anexa os resultados como "Referências
+   externas" pro modelo sugerir um caminho de estudo. Regras: a consulta leva só
+   a pergunta e o nome do curso (nenhum dado pessoal); só título e resumo dos
+   resultados são usados (nenhuma página é baixada); o texto é tratado como
+   dado, não como ordem; serve para *como estudar* as disciplinas, nunca para
+   afirmar o que a Cesuca oferece (semestre, carga, créditos, pré-requisitos
+   oficiais), que continua vindo só dos materiais. Se a busca falha ou demora
+   mais que `CHAT_WEB_SEARCH_TIMEOUT` (8s), o chat responde sem ela. Ajustes:
+   `CHAT_WEB_SEARCH_ENABLED` (padrão `True`), `CHAT_WEB_SEARCH_MAX_RESULTS`
+   (`5`) e `CHAT_WEB_SEARCH_TIMEOUT` (`8`). Ignorada no modo estrito. Adiciona
+   alguns segundos à primeira resposta dessas perguntas.
+
 Não há limite de quantidade de mensagens por usuário nem limite imposto ao
 modelo (tokens, temperatura etc.) — só o teto de histórico acima, que é
 janela de contexto.
@@ -578,17 +605,19 @@ executados de verdade contra o LLM configurado:
 python manage.py test_guardrails                       # todos os casos
 python manage.py test_guardrails --only recusa         # só um tipo (recusa, resposta, sem_info, cautela, aviso_geral)
 python manage.py test_guardrails --name "receita"      # casos cujo nome contém o texto
-python manage.py test_guardrails --user email@x.com    # roda como esse usuário (define o curso/materiais)
+python manage.py test_guardrails --user email@x.com    # roda como esse usuário (padrão: um aluno com curso; o curso define o que ele vê)
 python manage.py test_guardrails --retries 2           # tenta de novo casos que falharem (o LLM varia)
 ```
 
-Rode depois de mexer nos arquivos de prompt ou trocar de modelo. Os casos de
-"sem_info" (grade, disciplinas...) assumem que os materiais enviados não trazem
-essa informação; se trouxerem, ajuste-os.
+Rode depois de mexer nos arquivos de prompt ou trocar de modelo. Os casos
+"sem_info" (data da prova, créditos, contatos...) assumem que essa informação não
+está nos materiais enviados; se estiver, ajuste-os. Os de grade e disciplinas usam
+"cautela" (não afirmar com falsa certeza), porque dependem de como a grade foi
+enviada.
 
 **Sugestões e feedback:** a tela inicial do chat mostra sugestões prontas
-(grade curricular, disciplinas, materiais disponíveis, e perguntas baseadas nos
-materiais mais recentes que o usuário pode ver). Cada resposta pode ser
+(grade curricular, disciplinas e "com o que você pode me ajudar" — perguntas fixas; a
+resposta vem sempre dos materiais enviados). Cada resposta pode ser
 avaliada com 👍/👎, e o chat exibe um aviso de que a IA pode errar.
 
 Todas as rotas ficam sob `/api/conversations/`:

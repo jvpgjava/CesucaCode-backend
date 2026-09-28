@@ -8,7 +8,9 @@ from apps.core.models import TimeStampedModel
 
 
 def document_upload_path(instance, filename):
-    return f"documents/{instance.course.code}/{uuid.uuid4()}_{filename}"
+    # Um material pode valer pra vários cursos (M2M, só definido depois do
+    # create), então o caminho não carrega mais o curso.
+    return f"documents/{uuid.uuid4()}_{filename}"
 
 
 class Document(TimeStampedModel):
@@ -18,8 +20,10 @@ class Document(TimeStampedModel):
         FAILED = "failed", "Falhou"
 
     title = models.CharField(max_length=255)
-    course = models.ForeignKey(
-        "accounts.Course", on_delete=models.PROTECT, related_name="documents"
+    courses = models.ManyToManyField(
+        "accounts.Course",
+        related_name="documents",
+        help_text="Cursos para os quais o material vale (um ou mais).",
     )
     file = models.FileField(upload_to=document_upload_path)
     uploaded_by = models.ForeignKey(

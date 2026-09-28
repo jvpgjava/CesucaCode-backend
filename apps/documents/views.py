@@ -16,12 +16,17 @@ from .serializers import (
 
 
 def get_documents_queryset(user):
-    queryset = Document.objects.select_related("course", "uploaded_by")
+    """Materiais visíveis ao usuário. Um material pode valer pra vários cursos:
+    o aluno vê os que incluem o curso dele; o coordenador, os que incluem algum
+    curso que ele coordena; o admin, todos."""
+    queryset = Document.objects.select_related("uploaded_by").prefetch_related("courses")
     if user.role == User.Role.CS_ADMIN:
         return queryset
     if user.role == User.Role.CS_COORDINATOR:
-        return queryset.filter(course__in=user.coordinated_courses.all())
-    return queryset.filter(course=user.course)
+        return queryset.filter(courses__in=user.coordinated_courses.all()).distinct()
+    if not user.course_id:
+        return queryset.none()
+    return queryset.filter(courses=user.course)
 
 
 class DocumentListView(generics.ListAPIView):

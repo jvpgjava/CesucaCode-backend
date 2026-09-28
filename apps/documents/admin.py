@@ -15,8 +15,15 @@ class DocumentChunkInline(admin.TabularInline):
 
 @admin.register(Document)
 class DocumentAdmin(admin.ModelAdmin):
-    list_display = ["title", "course", "status", "uploaded_by", "created_at"]
-    list_filter = ["status", "course"]
+    list_display = ["title", "course_names", "status", "uploaded_by", "created_at"]
+    list_filter = ["status", "courses"]
     search_fields = ["title"]
     readonly_fields = ["status", "processing_error", "created_at", "updated_at"]
     inlines = [DocumentChunkInline]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related("courses")
+
+    @admin.display(description="Cursos")
+    def course_names(self, obj):
+        return ", ".join(course.code for course in obj.courses.all())

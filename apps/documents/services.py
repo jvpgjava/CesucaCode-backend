@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="doc-processor")
 
 
-def create_document(*, title, course, file, uploaded_by) -> Document:
+def create_document(*, title, courses, file, uploaded_by) -> Document:
     document = Document.objects.create(
         title=title,
-        course=course,
         file=file,
         uploaded_by=uploaded_by,
         status=Document.Status.PROCESSING,
     )
+    document.courses.set(courses)
     _executor.submit(_process_document_in_background, document.id)
     return document
 

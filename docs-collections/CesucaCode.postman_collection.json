@@ -292,12 +292,13 @@
               "mode": "formdata",
               "formdata": [
                 { "key": "title", "value": "Introdução a Algoritmos", "type": "text" },
-                { "key": "course", "value": "cc", "type": "text" },
+                { "key": "courses", "value": "cc", "type": "text" },
+                { "key": "courses", "value": "ads", "type": "text" },
                 { "key": "file", "type": "file", "src": [] }
               ]
             },
             "url": "{{base_url}}/api/documents/upload/",
-            "description": "Requer token de CSAdmin ou CSCoordinator (do curso). No campo 'file', selecione docs-collections/sample_material.txt (ou um PDF/DOCX/PPTX seu). O processamento é assíncrono — a resposta já vem com status 'processing'; consulte 'Ver detalhe de um material' até virar 'ready' (ou 'failed')."
+            "description": "Requer token de CSAdmin ou CSCoordinator (só para cursos que coordena). Um material pode valer para vários cursos: repita o campo 'courses' (cc, ads). No campo 'file', selecione docs-collections/sample_material.txt (ou um PDF/DOCX/PPTX seu). O processamento é assíncrono — a resposta já vem com status 'processing'; consulte 'Ver detalhe de um material' até virar 'ready' (ou 'failed')."
           },
           "event": [
             {
@@ -334,10 +335,10 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"Novo título do material\",\n  \"course\": \"cc\"\n}"
+              "raw": "{\n  \"title\": \"Novo título do material\",\n  \"courses\": [\"cc\", \"ads\"]\n}"
             },
             "url": "{{base_url}}/api/documents/{{document_id}}/",
-            "description": "Requer CSAdmin ou CSCoordinator (do curso). Só edita os metadados — não reenvia o arquivo nem reprocessa os trechos (para isso use 'Reprocessar material')."
+            "description": "Requer CSAdmin ou CSCoordinator (de algum curso do material). 'courses' é a lista completa de cursos (o coordenador não consegue remover cursos que não coordena). Só edita os metadados — não reenvia o arquivo nem reprocessa os trechos (para isso use 'Reprocessar material')."
           }
         },
         {
@@ -398,7 +399,7 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/api/conversations/suggestions/",
-            "description": "Devolve {\"suggestions\": [...]}: perguntas fixas (grade curricular, disciplinas, materiais disponíveis) mais perguntas geradas a partir dos materiais mais recentes que ESTE usuário pode ver (mesmo escopo por papel/curso do RAG)."
+            "description": "Devolve {\"suggestions\": [...]}: perguntas fixas para o usuário clicar (grade curricular, disciplinas, materiais disponíveis). A resposta a cada uma vem dos materiais enviados."
           }
         },
         {

@@ -7,8 +7,10 @@ from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc.document import DoclingDocument
 from docling_core.types.io import DocumentStream
 
-SUPPORTED_EXTENSIONS = {"pdf", "docx", "pptx", "txt"}
-DOCLING_EXTENSIONS = {"pdf", "docx", "pptx"}
+SUPPORTED_EXTENSIONS = {"pdf", "docx", "pptx", "md", "txt"}
+# md entra no Docling (e não no split simples do txt) pra preservar os
+# títulos (#) como `heading` dos chunks, igual aos demais formatos.
+DOCLING_EXTENSIONS = {"pdf", "docx", "pptx", "md"}
 
 
 class UnsupportedFileTypeError(Exception):

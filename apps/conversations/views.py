@@ -52,7 +52,7 @@ class ConversationMessagesView(generics.ListAPIView):
 
 class SuggestionsView(APIView):
     def get(self, request):
-        return Response({"suggestions": services.build_suggestions(request.user)})
+        return Response({"suggestions": services.build_suggestions()})
 
 
 class MessageFeedbackView(APIView):

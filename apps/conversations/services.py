@@ -9,11 +9,15 @@ from apps.ai_providers import services as ai_providers
 from apps.documents.models import DocumentChunk
 from apps.documents.views import get_documents_queryset
 
+from . import web_search
 from .models import Conversation, Message
 
 logger = logging.getLogger(__name__)
 
 TOP_K_CHUNKS = 5
+CURRICULUM_TOP_K_CHUNKS = 8
+CURRICULUM_EXTRA_DISTANCE = 0.05
+SHORT_FOLLOWUP_MAX_WORDS = 6
 
 # Resposta padrão quando o provedor do LLM se recusa a responder (filtro de
 # conteúdo). Como ela é salva no histórico, o par pergunta+recusa é omitido do
@@ -69,25 +73,14 @@ def build_user_profile_block(user) -> str:
 STATIC_SUGGESTIONS = [
     "Qual é a grade curricular do meu curso?",
     "Quais disciplinas devo cursar e em que ordem?",
-    "Quais materiais estão disponíveis para eu estudar?",
+    "Com o que você pode me ajudar?",
 ]
 
 
-def _clean_title(title: str) -> str:
-    return " ".join(title.split())[:80]
-
-
-def build_suggestions(user, max_dynamic_docs: int = 2) -> list[str]:
-    """Sugestões de primeira mensagem: fixas (grade, disciplinas...) + algumas
-    geradas a partir dos materiais prontos que o usuário pode ver."""
-    suggestions = list(STATIC_SUGGESTIONS)
-    recent = get_documents_queryset(user).filter(status="ready").order_by("-created_at")[:max_dynamic_docs]
-    for i, doc in enumerate(recent):
-        title = _clean_title(doc.title)
-        if i == 0:
-            suggestions.append(f"Faça um resumo do material “{title}”.")
-        suggestions.append(f"Quais são os principais tópicos de “{title}”?")
-    return suggestions
+def build_suggestions() -> list[str]:
+    """Sugestões de primeira mensagem. São perguntas fixas; a resposta sempre
+    vem das informações do curso (ou "não tenho essa informação", se não houver)."""
+    return list(STATIC_SUGGESTIONS)
 
 
 def get_accessible_chunks_queryset(user):
@@ -95,27 +88,43 @@ def get_accessible_chunks_queryset(user):
         document__in=get_documents_queryset(user),
         document__status="ready",
         embedding__isnull=False,
-    ).select_related("document", "document__course")
+    ).select_related("document")
 
 
-def retrieve_context(user, query_text, top_k=TOP_K_CHUNKS):
+def retrieve_context(user, query_text, top_k=TOP_K_CHUNKS, max_distance=None):
+    max_distance = settings.RAG_MAX_DISTANCE if max_distance is None else max_distance
     query_vector = ai_providers.get_embedding_model().embed_query(query_text)
     return list(
         get_accessible_chunks_queryset(user)
         .annotate(distance=CosineDistance("embedding", query_vector))
-        .filter(distance__lte=settings.RAG_MAX_DISTANCE)
+        .filter(distance__lte=max_distance)
         .order_by("distance")[:top_k]
     )
+
+
+def build_search_text(conversation: Conversation, user_text: str) -> str:
+    """Texto usado pra buscar no contexto (e detectar pergunta de grade).
+
+    Respostas curtas de continuação ("CC", "sim", "e o 2º semestre?") não se
+    parecem com nada nos materiais; sem a pergunta anterior a busca volta vazia
+    e a resposta cai em conhecimento geral. Por isso, mensagens curtas são
+    combinadas com a última pergunta do usuário na conversa."""
+    if len(user_text.split()) > SHORT_FOLLOWUP_MAX_WORDS:
+        return user_text
+    previous = (
+        conversation.messages.filter(role=Message.Role.USER).order_by("-id").values_list("content", flat=True).first()
+    )
+    return f"{previous} {user_text}" if previous else user_text
 
 
 def build_context_block(chunks) -> str:
     if not chunks:
         return ""
-    parts = [f"[Fonte: {chunk.document.title}]\n{chunk.content}" for chunk in chunks]
+    parts = [f"[Origem: {chunk.document.title}]\n{chunk.content}" for chunk in chunks]
     return "\n\n---\n\n".join(parts)
 
 
-def build_messages(conversation: Conversation, user_text: str, context_block: str):
+def build_messages(conversation: Conversation, user_text: str, context_block: str, web_block: str = ""):
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
     system_text = f"{get_system_prompt()}\n\n{build_user_profile_block(conversation.user)}"
@@ -143,30 +152,45 @@ def build_messages(conversation: Conversation, user_text: str, context_block: st
             messages.append(AIMessage(content=past.content))
 
     if context_block:
-        user_content = (
-            f"Contexto dos materiais didáticos:\n\n{context_block}\n\n---\n\nPergunta: {user_text}"
-        )
+        sections = [f"Contexto dos materiais didáticos:\n\n{context_block}"]
     elif settings.CHAT_ALLOW_GENERAL_KNOWLEDGE:
-        user_content = (
-            "[Nenhum trecho dos materiais didáticos foi considerado relevante para esta "
-            f"pergunta.]\n\nPergunta: {user_text}"
-        )
+        sections = ["[Nenhuma informação de referência foi considerada relevante para esta pergunta.]"]
     else:
-        user_content = (
-            "[Nenhum trecho dos materiais didáticos foi considerado relevante para esta "
-            "pergunta. MODO ESTRITO: não use conhecimento geral. Informe que não encontrou "
-            "o assunto nos materiais enviados e sugira falar com o professor ou pedir que "
-            f"o material seja enviado.]\n\nPergunta: {user_text}"
-        )
+        sections = [
+            "[Nenhuma informação de referência foi considerada relevante para esta "
+            "pergunta. MODO ESTRITO: não use conhecimento geral. Diga que não tem essa "
+            "informação confirmada e sugira falar com o professor ou a coordenação — sem "
+            "mencionar materiais, arquivos ou base de dados.]"
+        ]
+    if web_block:
+        sections.append(web_block)
+    sections.append(f"Pergunta: {user_text}")
 
-    messages.append(HumanMessage(content=user_content))
+    messages.append(HumanMessage(content="\n\n---\n\n".join(sections)))
     return messages
 
 
 def send_message(conversation: Conversation, user_text: str):
-    context_chunks = retrieve_context(conversation.user, user_text)
+    search_text = build_search_text(conversation, user_text)
+    # Em pergunta de grade/disciplinas a resposta precisa do conjunto todo (a grade
+    # se espalha por vários trechos, todos perto do limite de relevância), então
+    # busca mais trechos e aceita uma distância um pouco maior.
+    curriculum = web_search.is_curriculum_question(search_text)
+    context_chunks = retrieve_context(
+        conversation.user,
+        search_text,
+        top_k=CURRICULUM_TOP_K_CHUNKS if curriculum else TOP_K_CHUNKS,
+        max_distance=settings.RAG_MAX_DISTANCE + (CURRICULUM_EXTRA_DISTANCE if curriculum else 0),
+    )
     context_block = build_context_block(context_chunks)
-    messages = build_messages(conversation, user_text, context_block)
+    # Referências externas (pesquisa na web) só em perguntas de grade/disciplinas
+    # e não no modo estrito, que restringe a resposta ao que a instituição enviou.
+    web_block = (
+        web_search.build_web_block(conversation.user, search_text)
+        if settings.CHAT_ALLOW_GENERAL_KNOWLEDGE
+        else ""
+    )
+    messages = build_messages(conversation, user_text, context_block, web_block)
 
     Message.objects.create(conversation=conversation, role=Message.Role.USER, content=user_text)
     if not conversation.title:

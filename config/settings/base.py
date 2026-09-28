@@ -162,3 +162,10 @@ CHAT_MAX_HISTORY_MESSAGES = env.int("CHAT_MAX_HISTORY_MESSAGES", default=12)
 # gerais de computação (avisando que não veio dos materiais); False = modo
 # estrito, responde só que não encontrou nos materiais enviados.
 CHAT_ALLOW_GENERAL_KNOWLEDGE = env.bool("CHAT_ALLOW_GENERAL_KNOWLEDGE", default=True)
+
+# Pesquisa na web (DuckDuckGo, sem chave) só em perguntas de grade curricular e
+# disciplinas, pra sugerir um caminho de estudo. Falhou ou desligado: o chat
+# segue normalmente sem as referências externas. Ignorada no modo estrito.
+CHAT_WEB_SEARCH_ENABLED = env.bool("CHAT_WEB_SEARCH_ENABLED", default=True)
+CHAT_WEB_SEARCH_MAX_RESULTS = env.int("CHAT_WEB_SEARCH_MAX_RESULTS", default=5)
+CHAT_WEB_SEARCH_TIMEOUT = env.int("CHAT_WEB_SEARCH_TIMEOUT", default=8)

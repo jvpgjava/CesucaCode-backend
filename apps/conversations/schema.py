@@ -63,9 +63,8 @@ extend_schema_view(
     get=extend_schema(
         summary="Sugestões de primeira mensagem",
         description=(
-            "Perguntas prontas pro usuário clicar: algumas fixas (grade curricular, "
-            "disciplinas, materiais disponíveis) e outras geradas a partir dos materiais "
-            "prontos que ele pode ver."
+            "Perguntas prontas pro usuário clicar (grade curricular, disciplinas, "
+            "materiais disponíveis). São fixas; a resposta sempre vem dos materiais enviados."
         ),
         tags=CONVERSATIONS,
     ),

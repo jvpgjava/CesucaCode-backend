@@ -97,7 +97,13 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min"},
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "10/min",
+        # Envio de mensagens do chat, por usuário: limite por minuto (contra
+        # rajadas/scripts) e por dia (contra custo descontrolado de LLM).
+        "chat": env("CHAT_THROTTLE_RATE", default="20/min"),
+        "chat_daily": env("CHAT_DAILY_THROTTLE_RATE", default="300/day"),
+    },
 }
 
 EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
@@ -145,6 +151,25 @@ OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 DEEPSEEK_API_KEY = env("DEEPSEEK_API_KEY", default="")
 ABACUSAI_API_KEY = env("ABACUSAI_API_KEY", default="")
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
+# Opcional: o OpenRouter usa esse cabeçalho para atribuir o tráfego ao app (ranking deles).
+OPENROUTER_HTTP_REFERER = env("OPENROUTER_HTTP_REFERER", default="")
+
+# Papéis de modelo (apps/ai_providers): LLM_{PAPEL}_PROVIDER/MODEL/MAX_TOKENS/TEMPERATURE.
+# Vazio = cai em LLM_PROVIDER/LLM_MODEL (provider/model) ou no padrão do papel
+# (max_tokens/temperature; ver ai_providers.services.ROLE_DEFAULTS).
+for _role in ("ANSWER", "ROUTER", "AGENT", "JUDGE"):
+    globals()[f"LLM_{_role}_PROVIDER"] = env(f"LLM_{_role}_PROVIDER", default="")
+    globals()[f"LLM_{_role}_MODEL"] = env(f"LLM_{_role}_MODEL", default="")
+    globals()[f"LLM_{_role}_MAX_TOKENS"] = env(f"LLM_{_role}_MAX_TOKENS", default="")
+    globals()[f"LLM_{_role}_TEMPERATURE"] = env(f"LLM_{_role}_TEMPERATURE", default="")
+LLM_TIMEOUT = env.float("LLM_TIMEOUT", default=60)  # segundos
+LLM_MAX_RETRIES = env.int("LLM_MAX_RETRIES", default=2)
+# Sobrescreve o método de saída estruturada do registro de capacidades:
+# json_schema | function_calling | json_mode (vazio = usa o registro).
+LLM_STRUCTURED_METHOD = env("LLM_STRUCTURED_METHOD", default="")
+# Gemini: orçamento de thinking em tokens (0 desliga; vazio = padrão do modelo).
+LLM_THINKING_BUDGET = env("LLM_THINKING_BUDGET", default="")
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://localhost:11434")
 
 _system_prompt_path = Path(
@@ -175,3 +200,7 @@ CHAT_ALLOW_GENERAL_KNOWLEDGE = env.bool("CHAT_ALLOW_GENERAL_KNOWLEDGE", default=
 CHAT_WEB_SEARCH_ENABLED = env.bool("CHAT_WEB_SEARCH_ENABLED", default=True)
 CHAT_WEB_SEARCH_MAX_RESULTS = env.int("CHAT_WEB_SEARCH_MAX_RESULTS", default=5)
 CHAT_WEB_SEARCH_TIMEOUT = env.int("CHAT_WEB_SEARCH_TIMEOUT", default=8)
+
+# Versão do pipeline do chat, gravada em cada MessageTrace para comparar
+# resultados entre versões (v0 = baseline anterior ao harness agêntico).
+PIPELINE_VERSION = env("PIPELINE_VERSION", default="v2")

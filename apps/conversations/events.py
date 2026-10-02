@@ -46,13 +46,13 @@ class ErrorEvent:
 
 
 STATUS_LABELS = {
-    "routing": "Entendendo sua pergunta",
-    "searching": "Buscando nos materiais do curso",
-    "reading": "Lendo {n} trechos",
-    "web": "Consultando referências externas",
-    "thinking": "Analisando as informações",
-    "writing": "Organizando a resposta",
-    "checking": "Conferindo a resposta",
+    "routing": "Pensando…",
+    "searching": "Procurando nas informações do curso…",
+    "reading": "Lendo {n} trechos com atenção…",
+    "web": "Pesquisando referências…",
+    "thinking": "Juntando as informações…",
+    "writing": "Escrevendo a resposta…",
+    "checking": "Conferindo os detalhes…",
 }
 
 # Nome do evento SSE por tipo; None = evento padrão (sem linha `event:`).

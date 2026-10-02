@@ -45,11 +45,11 @@ def test_meta_status_suggestions_done_error():
 def test_status_usa_rotulo_fixo_do_dicionario():
     event = status("searching")
     assert event.label == STATUS_LABELS["searching"]
-    assert _parse(to_sse(event)) == ("status", {"step": "searching", "label": "Buscando nos materiais do curso"})
+    assert _parse(to_sse(event)) == ("status", {"step": "searching", "label": "Procurando nas informações do curso…"})
 
 
 def test_status_formata_placeholder():
-    assert status("reading", n=3).label == "Lendo 3 trechos"
+    assert status("reading", n=3).label == "Lendo 3 trechos com atenção…"
 
 
 def test_status_etapa_desconhecida_falha():

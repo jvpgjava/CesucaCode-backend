@@ -853,7 +853,7 @@ event: meta
 data: {"user_message_id": 123, "route": null}
 
 event: status
-data: {"step": "searching", "label": "Buscando nos materiais do curso"}
+data: {"step": "searching", "label": "Procurando nas informações do curso…"}
 
 data: {"content": "pedaço de texto"}
 
@@ -922,8 +922,8 @@ só em `info_institucional` e `grade_disciplinas`.
 Se o modelo do papel `agent` não suporta ferramentas (ver
 `apps/ai_providers/capabilities.py`), o agente fica indisponível
 (`AgentUnavailable`) e o pipeline cai para o RAG simples. Os status enviados ao
-cliente usam só rótulos fixos ("Buscando nos materiais do curso", "Lendo 3
-trechos"...), sem consultas nem argumentos das ferramentas.
+cliente usam só rótulos fixos ("Procurando nas informações do curso…", "Lendo 3
+trechos com atenção…"...), sem consultas nem argumentos das ferramentas.
 
 ---
 

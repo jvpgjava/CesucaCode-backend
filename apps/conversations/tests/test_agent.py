@@ -159,7 +159,7 @@ def test_duas_buscas_e_ler_contexto(setup):
 
     assert steps_of(events) == ["searching", "thinking", "searching", "reading", "thinking", "writing"]
     labels = [e.label for e in events if isinstance(e, StatusEvent)]
-    assert "Lendo 3 trechos" in labels
+    assert "Lendo 3 trechos com atenção…" in labels
     assert env.retrieval.neighbor_calls == [{"chunk_id": 1, "window": 1}]
 
     # Os tool_call_id das respostas casam com os da chamada.

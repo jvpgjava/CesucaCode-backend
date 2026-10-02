@@ -221,9 +221,9 @@ def test_endpoint_envia_sse_tipado(api, conversation, fake_llm):
     events = _sse(response)
     names = [name for name, _ in events]
     assert names == ["status", "meta", "status", "status", None, None, "done"]
-    assert events[0][1] == {"step": "routing", "label": "Entendendo sua pergunta"}
+    assert events[0][1] == {"step": "routing", "label": "Pensando…"}
     assert events[1][1] == {"user_message_id": conversation.messages.get(role="user").id, "route": "direta"}
-    assert events[2][1] == {"step": "searching", "label": "Buscando nos materiais do curso"}
+    assert events[2][1] == {"step": "searching", "label": "Procurando nas informações do curso…"}
     assert events[4][1] == {"content": "Olá"}
     assert events[-1][1] == {"message_id": conversation.messages.get(role="assistant").id}
 

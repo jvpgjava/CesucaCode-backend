@@ -280,7 +280,7 @@ def fake_agent(monkeypatch, *, pieces=("Resposta ", "do agente."), chunks=(), ra
         def stream():
             if fail_after_call is not None:
                 raise fail_after_call
-            yield StatusEvent(step="searching", label="Buscando nos materiais do curso")
+            yield StatusEvent(step="searching", label="Procurando nas informações do curso…")
             registry.add(list(chunks))
             for piece in pieces:
                 recorder.mark_first_token()

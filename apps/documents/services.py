@@ -7,6 +7,7 @@ from django.conf import settings
 from django.db import close_old_connections, transaction
 
 from apps.ai_providers import services as ai_providers
+from apps.ai_providers.exceptions import ProviderConfigurationError
 
 from . import chunking, extraction
 from .models import Document, DocumentChunk
@@ -127,6 +128,8 @@ def _embed_documents(texts: list[str]) -> list[list[float]]:
         batch = texts[start : start + size]
         _embedding_throttle.wait(len(batch))
         embeddings.extend(model.embed_documents(batch))
+    if embeddings:
+        ai_providers.validate_embedding_dimensions(embeddings[0])
     return embeddings
 
 
@@ -157,7 +160,7 @@ def _process_document(document: Document) -> None:
             document.processing_error = ""
             document.save(update_fields=["status", "processing_error", "updated_at"])
     except Exception as exc:
-        if isinstance(exc, extraction.UnsupportedFileTypeError):
+        if isinstance(exc, (extraction.UnsupportedFileTypeError, ProviderConfigurationError)):
             document.processing_error = str(exc)
         elif _is_quota_error(exc):
             logger.error("Cota do provider de embedding esgotada no documento %s: %s", document.id, exc)

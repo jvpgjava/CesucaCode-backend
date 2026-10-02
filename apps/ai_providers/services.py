@@ -65,3 +65,16 @@ def get_embedding_model():
         return OllamaEmbeddings(model=settings.EMBEDDING_MODEL, base_url=settings.OLLAMA_BASE_URL)
 
     raise ProviderConfigurationError(f"Provider de embedding '{provider}' não suportado.")
+
+
+def validate_embedding_dimensions(vector) -> None:
+    """Falha com mensagem clara se o modelo devolver um vetor de tamanho diferente
+    do da coluna `embedding` (EMBEDDING_DIMENSIONS). Sem isso, o erro aparece só
+    como falha obscura de SQL ao gravar/buscar."""
+    expected = settings.EMBEDDING_DIMENSIONS
+    if len(vector) != expected:
+        raise ProviderConfigurationError(
+            f"O modelo de embedding '{settings.EMBEDDING_MODEL}' devolveu vetores de "
+            f"{len(vector)} dimensões, mas EMBEDDING_DIMENSIONS={expected}. Ajuste o "
+            "modelo ou a dimensão (trocar a dimensão exige nova migration e reprocessar os materiais)."
+        )

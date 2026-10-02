@@ -8,6 +8,14 @@ class Conversation(TimeStampedModel):
         "accounts.User", on_delete=models.CASCADE, related_name="conversations"
     )
     title = models.CharField(max_length=255, blank=True)
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Estado do roteador na conversa: `course` (curso resolvido: cc/ads, preenchido uma vez), "
+            "`hint_level` (nível atual da escada de dicas, 1 a 3) e `last_intent`."
+        ),
+    )
 
     class Meta:
         ordering = ["-updated_at"]

@@ -92,7 +92,30 @@ por e-mail, não por "username". É o único jeito de criar um CSAdmin — não
 existe endpoint de API para isso de propósito (evita escalonamento de
 privilégio via API).
 
-### 7. Subir o servidor
+### 7. (Opcional) Carregar a base mínima de materiais
+
+Para o chat já ter o que consultar numa instalação nova, carregue os materiais
+de exemplo de `apps/documents/seed_materials/` (avaliação, manual das
+disciplinas online, horário e planos de ensino de CC):
+
+```bash
+python manage.py seed_materials
+```
+
+Precisa do CSAdmin do passo 6 e do provider de embedding configurado no `.env`
+(gera embeddings de verdade). É idempotente: pula o que já existe e reprocessa
+o que tinha falhado. No plano gratuito do Gemini (100 embeddings/min) defina
+`EMBEDDING_MAX_REQUESTS_PER_MINUTE=90` no `.env`: a ingestão passa a se espaçar
+sozinha e o Plano de Ensino (~700 chunks) leva uns 8 minutos. Sem essa variável
+(padrão, para produção) não há espera, e erro de cota do provider falha rápido. No Docker, `SEED_MATERIALS=1` no ambiente roda isso no startup (só faz
+efeito se já existir um CSAdmin). A lista fica em `seed_materials/manifest.json`;
+para incluir outro material, copie o arquivo para a pasta e adicione uma linha.
+Cada `.md` tem seu PDF original em `seed_materials/originals/` (referência, não
+ingerido; veja o `README.md` da pasta). Prefira `.md`/`.txt` a PDFs: processa em
+segundos. PDF escaneado falha porque o OCR está desligado, então vira `.md`
+antes (foi o caso do Código Disciplinar).
+
+### 8. Subir o servidor
 
 ```bash
 python manage.py runserver

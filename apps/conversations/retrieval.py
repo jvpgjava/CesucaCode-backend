@@ -34,6 +34,10 @@ CURRICULUM_EXTRA_DISTANCE = 0.05
 # Acerto textual por "qualquer termo" (consulta relaxada) é evidência fraca: só entra
 # se o trecho também não for semanticamente distante demais (cutoff + esta margem).
 RELAXED_TEXT_DISTANCE_MARGIN = 0.15
+# Mesmo a consulta textual estrita casa trechos semanticamente distantes (ex.: a
+# palavra "avaliação" em um plano de ensino qualquer). Um teto frouxo de distância
+# corta só o ruído grosseiro sem anular o ganho lexical da busca híbrida.
+STRICT_TEXT_DISTANCE_MARGIN = 0.30
 MAX_RELAXED_TERMS = 12
 COURSE_FILTER_CODES = ("cc", "ads")  # "ambos"/"indefinido"/None: sem filtro de curso
 
@@ -182,7 +186,11 @@ def _text_search(queryset, query: str, query_vector) -> list[dict]:
             .values(*fields)[:CANDIDATES_PER_SIDE]
         )
 
-    rows = run(query)
+    rows = [
+        row
+        for row in run(query)
+        if row.get("distance") is None or row["distance"] <= settings.RAG_MAX_DISTANCE + STRICT_TEXT_DISTANCE_MARGIN
+    ]
     if rows:
         return rows
     relaxed = _relaxed_query_text(query)

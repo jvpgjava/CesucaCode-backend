@@ -93,7 +93,8 @@ def test_hibrido_traz_acerto_textual_mesmo_com_vetor_distante(student, course, a
         [course],
         [
             ("Avaliação", "A média das provas é sete.", vec(1.0)),  # só vetorial (distância 0)
-            ("Ementa", "A ementa de Banco de Dados inclui modelagem.", vec(0.0, 1.0)),  # só textual
+            # só textual: distância ~0,45, acima do corte vetorial mas dentro do teto textual
+            ("Ementa", "A ementa de Banco de Dados inclui modelagem.", vec(1.0, 1.5)),
             ("Outro", "Texto sem relação alguma.", vec(0.0, 0.0, 1.0)),
         ],
     )
@@ -102,9 +103,24 @@ def test_hibrido_traz_acerto_textual_mesmo_com_vetor_distante(student, course, a
     chunks = list(doc.chunks.order_by("index"))
     assert set(by_id) == {chunks[0].id, chunks[1].id}
     assert by_id[chunks[0].id].distance == pytest.approx(0.0, abs=1e-6)
-    assert by_id[chunks[1].id].distance == pytest.approx(1.0, abs=1e-6)
+    assert by_id[chunks[1].id].distance == pytest.approx(0.445, abs=1e-3)
     assert all(c.score > 0 for c in result)
     assert by_id[chunks[0].id].order == 0 and by_id[chunks[1].id].heading == "Ementa"
+
+
+def test_acerto_textual_semanticamente_distante_e_descartado(student, course, admin, embed):
+    doc = make_doc(
+        admin,
+        "Plano",
+        [course],
+        [
+            ("Avaliação", "A média das provas é sete.", vec(1.0)),
+            ("Ementa", "A ementa de Banco de Dados inclui modelagem.", vec(0.0, 1.0)),  # distância 1,0
+        ],
+    )
+    result = retrieval.search(student, "ementa")
+    chunks = list(doc.chunks.order_by("index"))
+    assert [c.chunk_id for c in result] == [chunks[0].id]
 
 
 def test_chunk_nos_dois_rankings_fica_em_primeiro(student, course, admin, embed):

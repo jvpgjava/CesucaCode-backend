@@ -34,3 +34,6 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Resultados das rodadas de avaliação (manage.py run_evals)
+apps/conversations/evals/results/

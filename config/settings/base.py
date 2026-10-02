@@ -231,3 +231,13 @@ AGENT_MAX_SECONDS = env.float("AGENT_MAX_SECONDS", default=30)
 # Roteador de intenção (L0 determinístico + L1 com LLM pequeno). Desligado, só o L0
 # roda e o resto cai no fallback (heurística da v0: regex de grade + pergunta anterior).
 CHAT_ROUTER_ENABLED = env.bool("CHAT_ROUTER_ENABLED", default=True)
+
+# Passos extras do pipeline v2 (apps/conversations/pipeline.py), ambos com o modelo do
+# papel "router" e ambos opcionais (falha = segue sem). Desligados, o pipeline fica
+# mais perto da v0.
+# - Suficiência: na rota direta (institucional/grade), pergunta ao modelo se os trechos
+#   recuperados sustentam a resposta; se não, o prompt manda dizer que não tem a
+#   informação confirmada em vez de preencher com suposições.
+# - Follow-ups: até 3 perguntas de continuação (evento SSE `suggestions`) depois da resposta.
+CHAT_SUFFICIENCY_CHECK_ENABLED = env.bool("CHAT_SUFFICIENCY_CHECK_ENABLED", default=True)
+CHAT_FOLLOWUPS_ENABLED = env.bool("CHAT_FOLLOWUPS_ENABLED", default=True)

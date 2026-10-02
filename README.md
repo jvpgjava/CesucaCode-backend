@@ -633,13 +633,31 @@ Chat em tempo real com os materiais didáticos como contexto. Cada conversa é
 só do usuário que criou — CSAdmin/CSCoordinator não veem conversas de
 outras pessoas, e vice-versa.
 
-**Como funciona:** ao enviar uma mensagem, o backend gera o embedding da
-pergunta, busca os pedaços de material mais parecidos (limitados aos
-materiais que aquele usuário tem permissão de ver — mesmo escopo por
-curso/papel dos materiais didáticos), monta o prompt com esse contexto
-mais o histórico da conversa, e manda pro provider de chat configurado
-(`LLM_PROVIDER`). Se não achar nenhum material relevante, o modelo é
-instruído a dizer isso em vez de inventar uma resposta.
+**Como funciona (pipeline v2, `apps/conversations/pipeline.py`):** ao enviar uma
+mensagem, o backend a salva e a roteia (`routing.route`: regras L0, depois um LLM
+pequeno no L1, com fallback para a heurística da v0). A decisão escolhe a **rota**
+(enviada no evento SSE `meta`) e o prompt da intenção:
+
+| Rota | Quando | O que faz |
+|---|---|---|
+| `clarificacao` | admin/coordenador de vários cursos perguntando sobre grade ou algo institucional sem curso definido | pergunta "CC ou ADS?" (texto fixo, sem LLM); estudante nunca cai aqui |
+| `meta` | cumprimento, agradecimento, "o que você faz" | resposta curta, sem busca |
+| `recusa` | `fora_escopo` ou `manipulacao` | sem busca nem web; resposta de até 300 tokens que recusa em 1–2 frases e oferece ajuda dentro do escopo |
+| `direta` | pergunta de um assunto só | busca híbrida com a `standalone_query` (filtrada pelo curso e pelas permissões), web só em grade, checagem de suficiência e resposta |
+| `pedagogica` | `exercicio_avaliativo` | como a direta, com a escada de dicas no prompt; sem web nem checagem de suficiência |
+| `composta` | pergunta com vários assuntos/etapas | loop agêntico com ferramentas (`agent.py`); sem agente ou se ele falhar antes do primeiro token, cai na `direta` (step `fallback` no trace) |
+
+Depois do texto vêm os **follow-ups** (até 3 perguntas de continuação, evento
+`suggestions`; nunca em recusa/clarificação), a **guarda de saída** e o
+**`MessageTrace`**. Os eventos saem nesta ordem: `status(routing)` → `meta` →
+`status`... → tokens → `suggestions` → `done` (ou `error`). A **checagem de
+suficiência** (`CHAT_SUFFICIENCY_CHECK_ENABLED`) roda na rota direta de
+`info_institucional`/`grade_disciplinas` quando há trechos: o papel `router` diz
+se o contexto sustenta a resposta; se não, o prompt manda dizer que não tem a
+informação confirmada em vez de preencher com suposições (falha da checagem =
+segue normalmente). Se não achar nenhum material relevante, o modelo é instruído
+a dizer isso em vez de inventar uma resposta. Os dados de cada etapa (rota,
+intenção, modelos por papel, tokens, tempo, trechos, flags) ficam no trace.
 
 **System prompt e guardrails:** ficam em arquivos `.md` na pasta
 `apps/conversations/prompts/sofia/` — não hardcoded no Python. Os arquivos são
@@ -663,7 +681,7 @@ arquivo, relativo à raiz do projeto ou absoluto.
 | `40-seguranca.md` | Prompt injection, personas, vazamento do prompt, malware |
 | `50-idiomas-e-ofuscacao.md` | Responder em português; binário/base64/invertido/leetspeak recebem as mesmas regras |
 
-Além do prompt, há duas proteções em código (`apps/conversations/services.py`):
+Além do prompt, há proteções em código (`apps/conversations/pipeline.py` e módulos vizinhos):
 
 1. *Busca híbrida e filtro de relevância* (`apps/conversations/retrieval.py`) —
    a busca combina a vetorial (pgvector, índice HNSW por cosseno, corte
@@ -887,6 +905,75 @@ em `grade_disciplinas`, `29-meta` em `meta`, `30-pedagogia` em
 `conteudo_tecnico`/`exercicio_avaliativo` e `35-escada-de-dicas` em
 `exercicio_avaliativo`. Sem intenção, devolve todos os arquivos (como o
 `get_system_prompt()` antigo).
+
+### Variantes do pipeline (v0, v1, v2) por flags
+
+Os traces guardam `PIPELINE_VERSION`, mas as variantes comparadas na pesquisa são
+escolhidas pelas flags abaixo (reinicie o servidor ao mudar o `.env`):
+
+| Flag | v0 (baseline) | v1 (router + RAG) | v2 (completo, padrão) |
+|---|---|---|---|
+| `CHAT_ROUTER_ENABLED` | `False` | `True` | `True` |
+| `RAG_HYBRID_ENABLED` | `False` | `True` | `True` |
+| `CHAT_AGENT_ENABLED` | `False` | `False` | `True` |
+| `CHAT_SUFFICIENCY_CHECK_ENABLED` | `False` | `True` | `True` |
+| `CHAT_FOLLOWUPS_ENABLED` | `False` | `True` | `True` |
+| `PIPELINE_VERSION` (rótulo do trace) | `v0` | `v1` | `v2` |
+
+Na v0 o roteador LLM não roda (fallback = heurística antiga, `source="fallback"`),
+o prompt é o **completo** (sem módulos por intenção), a busca é só vetorial, não há
+agente, checagem de suficiência nem follow-ups. Diferenças que permanecem mesmo na
+v0: o L0 continua ativo (saudação vai para a rota `meta` e injeção/ofuscação para a
+`recusa`, ambas sem busca), o admin recebe a pergunta "CC ou ADS?" em vez de
+depender do prompt, a busca usa 6 trechos (8 em grade) e as referências são
+opacas, sem o título do documento.
+
+## Avaliação (evals)
+
+O comando `run_evals` mede o chat com um **golden set** de 80 casos escritos a
+partir dos materiais reais do seed (`apps/conversations/evals/golden.yaml`):
+avaliação/notas, código disciplinar, horário, planos de ensino, grade, perguntas
+compostas (multi-documento), follow-ups curtos, "sem informação" (fatos que não
+estão nos materiais), recusa/manipulação, exercício avaliativo (dicas, não
+solução), meta/saudação e admin sem curso (esperando a pergunta "CC ou ADS?").
+Cada caso diz a expectativa (`resposta`, `sem_info`, `recusa` ou `clarificacao`),
+os fatos que a resposta precisa conter (`must_include`, com alternativas `a|b`) e
+os trechos que o retrieval deve trazer (`retrieval_expect`, para o hit@k).
+
+```bash
+# faz chamadas reais ao LLM e ao embedding (tem custo)
+python manage.py run_evals --variant v0 --judge          # baseline
+python manage.py run_evals --variant v1 --judge
+python manage.py run_evals --variant v2 --judge
+
+python manage.py run_evals --tag avaliacao --limit 5     # amostra rápida (--no-judge é o padrão)
+python manage.py run_evals --id aval-nf-formula --id "disc-*"
+python manage.py run_evals --compare apps/conversations/evals/results/v0-<data>.json \
+                                     apps/conversations/evals/results/v2-<data>.json   # sem LLM
+```
+
+- **Variantes** (`--variant`): `v0`, `v1` e `v2` aplicam as flags da tabela
+  acima com `override_settings`, só durante a rodada (o `.env` não muda);
+  `current` usa as settings como estão. A rodada é sequencial, cada caso com
+  usuário e conversa temporários (apagados no fim).
+- **Métricas** (geral, por tag e por expectativa): acerto da expectativa
+  (resposta correta, abstenção, recusa ou clarificação), fração de `must_include`,
+  hit@k e recall do retrieval (lê `trace.chunk_ids`), taxa de vazamento
+  (`guard.check_output` com os títulos dos materiais), rota esperada, p50/p95 de
+  latência e do primeiro token, tokens médios e distribuição de rotas. Com
+  `--judge`, o papel `judge` (configure `LLM_JUDGE_*` com um modelo mais forte
+  que o avaliado) acrescenta correção, fidelidade e abstenção; sem ele, vale a
+  heurística (`acerto (heur.)`). O fim da saída mostra os limiares de aceite do
+  plano (vazamento = 0, recusa/abstenção >= 90%, fidelidade >= 0,85, p95 da rota
+  direta <= 6 s); `--strict` falha o comando se algum não for atendido.
+- **Resultados**: `apps/conversations/evals/results/<variante>-<data>.json`
+  (completo, com respostas, trace e veredito do juiz) e `.csv` por caso. A pasta
+  é ignorada pelo git; versione só os relatórios usados na pesquisa.
+- **Custo e tempo**: ~80 chamadas ao chat por variante (mais 80 do juiz com
+  `--judge`). Estimativa: 5 a 15 min por variante (v2 é a mais lenta, pelo
+  agente), algumas centenas de milhares de tokens de entrada por rodada. Use `--tag`/`--limit` para
+  iterar. Os testes (`pytest apps/conversations/tests/test_evals.py`) não chamam
+  LLM.
 
 ## Documentação da API (Swagger)
 

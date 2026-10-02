@@ -185,6 +185,20 @@ SYSTEM_PROMPT_PATH = str(
 # nada a ver com ele.
 RAG_MAX_DISTANCE = env.float("RAG_MAX_DISTANCE", default=0.30)
 
+# Busca híbrida: vetorial (pgvector) + textual (tsvector 'portuguese'), fundidas por
+# RRF. Desligada, volta ao comportamento antigo (só vetorial, com corte de distância).
+RAG_HYBRID_ENABLED = env.bool("RAG_HYBRID_ENABLED", default=True)
+# Gancho de reranking (retrieval.rerank). Ainda é a identidade: só ganha efeito
+# quando um reranker for implementado e o eval mostrar ganho.
+RAG_RERANK_ENABLED = env.bool("RAG_RERANK_ENABLED", default=False)
+# Tamanho máximo de cada chunk, em "tokens" aproximados (palavras + pontuação; ver
+# documents/chunking.py). Mudar isto exige `manage.py reprocess_documents`.
+RAG_CHUNK_MAX_TOKENS = env.int("RAG_CHUNK_MAX_TOKENS", default=300)
+# Tentativas e espera base (s, dobra a cada tentativa) para erros transitórios
+# (429/cota por minuto, timeout, conexão) ao gerar embeddings na ingestão.
+EMBEDDING_RETRY_ATTEMPTS = env.int("EMBEDDING_RETRY_ATTEMPTS", default=3)
+EMBEDDING_RETRY_BASE_SECONDS = env.float("EMBEDDING_RETRY_BASE_SECONDS", default=5.0)
+
 # Quantas mensagens anteriores da conversa vão pro modelo a cada turno. Sem teto,
 # conversas longas ficam cada vez mais caras/lentas e estouram o contexto.
 CHAT_MAX_HISTORY_MESSAGES = env.int("CHAT_MAX_HISTORY_MESSAGES", default=12)
@@ -204,3 +218,16 @@ CHAT_WEB_SEARCH_TIMEOUT = env.int("CHAT_WEB_SEARCH_TIMEOUT", default=8)
 # Versão do pipeline do chat, gravada em cada MessageTrace para comparar
 # resultados entre versões (v0 = baseline anterior ao harness agêntico).
 PIPELINE_VERSION = env("PIPELINE_VERSION", default="v2")
+
+# Loop agêntico (rota "composta", apps/conversations/agent.py). Desligado, as
+# perguntas compostas seguem o RAG simples. O orçamento limita custo e latência:
+# ao estourar qualquer teto, o agente para e responde com o que já coletou.
+CHAT_AGENT_ENABLED = env.bool("CHAT_AGENT_ENABLED", default=True)
+AGENT_MAX_TURNS = env.int("AGENT_MAX_TURNS", default=5)  # chamadas ao modelo com ferramentas
+AGENT_MAX_TOOL_CALLS = env.int("AGENT_MAX_TOOL_CALLS", default=8)
+AGENT_MAX_TOTAL_TOKENS = env.int("AGENT_MAX_TOTAL_TOKENS", default=40000)  # entrada + saída acumuladas
+AGENT_MAX_SECONDS = env.float("AGENT_MAX_SECONDS", default=30)
+
+# Roteador de intenção (L0 determinístico + L1 com LLM pequeno). Desligado, só o L0
+# roda e o resto cai no fallback (heurística da v0: regex de grade + pergunta anterior).
+CHAT_ROUTER_ENABLED = env.bool("CHAT_ROUTER_ENABLED", default=True)

@@ -354,6 +354,19 @@ def get_embedding_model():
     raise ProviderConfigurationError(f"Provider de embedding '{provider}' não suportado.")
 
 
+def embedding_text_for(kind: Literal["query", "document"], text: str) -> str:
+    """Aplica o prefixo de tarefa que alguns modelos de embedding exigem.
+
+    O EmbeddingGemma (via Ollama) foi treinado com prefixos distintos para consulta
+    e documento; sem eles a qualidade da busca cai. Os outros modelos recebem o
+    texto como está. ATENÇÃO: mudar isto (ou o modelo) altera os vetores gerados, então
+    exige `manage.py reprocess_documents` — vetores com e sem prefixo não se comparam."""
+    if settings.EMBEDDING_PROVIDER == "ollama" and "embeddinggemma" in settings.EMBEDDING_MODEL.lower():
+        prefix = "task: search result | query: " if kind == "query" else "title: none | text: "
+        return prefix + text
+    return text
+
+
 def validate_embedding_dimensions(vector) -> None:
     """Falha com mensagem clara se o modelo devolver um vetor de tamanho diferente
     do da coluna `embedding` (EMBEDDING_DIMENSIONS). Sem isso, o erro aparece só

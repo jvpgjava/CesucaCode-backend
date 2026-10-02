@@ -3,14 +3,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from django.conf import settings
-from pgvector.django import CosineDistance
 
 from apps.accounts.models import User
 from apps.ai_providers import services as ai_providers
-from apps.documents.models import DocumentChunk
 from apps.documents.views import get_documents_queryset
 
-from . import guard, web_search
+from . import guard, retrieval, web_search
 from .events import DoneEvent, ErrorEvent, MetaEvent, TokenEvent, status
 from .models import Conversation, Message
 from .tracing import TraceRecorder
@@ -82,23 +80,14 @@ def build_suggestions() -> list[str]:
 
 
 def get_accessible_chunks_queryset(user):
-    return DocumentChunk.objects.filter(
-        document__in=get_documents_queryset(user),
-        document__status="ready",
-        embedding__isnull=False,
-    ).select_related("document")
+    """Mantido por compatibilidade; a implementação vive em retrieval.py."""
+    return retrieval.get_accessible_chunks_queryset(user)
 
 
 def retrieve_context(user, query_text, top_k=TOP_K_CHUNKS, max_distance=None):
-    max_distance = settings.RAG_MAX_DISTANCE if max_distance is None else max_distance
-    query_vector = ai_providers.get_embedding_model().embed_query(query_text)
-    ai_providers.validate_embedding_dimensions(query_vector)
-    return list(
-        get_accessible_chunks_queryset(user)
-        .annotate(distance=CosineDistance("embedding", query_vector))
-        .filter(distance__lte=max_distance)
-        .order_by("distance")[:top_k]
-    )
+    """Pipeline legacy: delega à busca híbrida (retrieval.search). Devolve
+    `RetrievedChunk` (com `.id`, `.distance`, `.heading`, `.content`)."""
+    return retrieval.search(user, query_text, top_k=top_k, max_distance=max_distance)
 
 
 def build_search_text(conversation: Conversation, user_text: str) -> str:
@@ -122,12 +111,7 @@ def build_context_block(chunks) -> str:
     a referência existe só pra ele se orientar e não deve ser citada."""
     if not chunks:
         return ""
-    parts = []
-    for i, chunk in enumerate(chunks, 1):
-        heading = " ".join((getattr(chunk, "heading", "") or "").split())
-        ref = f"[T{i} · seção: {heading}]" if heading else f"[T{i}]"
-        parts.append(f"{ref}\n{chunk.content}")
-    return "\n\n---\n\n".join(parts)
+    return retrieval.format_context([(f"T{i}", chunk) for i, chunk in enumerate(chunks, 1)])
 
 
 def build_messages(

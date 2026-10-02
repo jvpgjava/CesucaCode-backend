@@ -2,7 +2,9 @@ import uuid
 
 from django.conf import settings
 from django.db import models
-from pgvector.django import VectorField
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVectorField
+from pgvector.django import HnswIndex, VectorField
 
 from apps.core.models import TimeStampedModel
 
@@ -49,9 +51,24 @@ class DocumentChunk(TimeStampedModel):
         help_text="Caminho de seções do documento a que o chunk pertence (ex.: '5. Modelo ER > 5.1 Entidades'), quando o formato permite extrair isso.",
     )
     embedding = VectorField(dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True)
+    # tsvector (config 'portuguese') de heading (peso A) + content (peso B), para a
+    # busca textual da busca híbrida. Preenchido na ingestão (services.py).
+    search_vector = SearchVectorField(null=True, blank=True, editable=False)
 
     class Meta:
         ordering = ["document_id", "index"]
+        indexes = [
+            # Busca vetorial aproximada por cosseno (pgvector aceita até 2000 dimensões
+            # em índice HNSW; acima disso troque por halfvec).
+            HnswIndex(
+                name="chunk_embedding_hnsw",
+                fields=["embedding"],
+                m=16,
+                ef_construction=64,
+                opclasses=["vector_cosine_ops"],
+            ),
+            GinIndex(fields=["search_vector"], name="chunk_search_vector_gin"),
+        ]
         constraints = [
             models.UniqueConstraint(fields=["document", "index"], name="unique_chunk_index_per_document")
         ]

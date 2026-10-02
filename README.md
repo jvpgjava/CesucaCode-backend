@@ -394,22 +394,29 @@ divisão em pedaços (chunks) e geração de embedding pra cada chunk (ver seç�
 
 Para PDF/DOCX/PPTX/MD, a extração usa o [Docling](https://github.com/docling-project/docling)
 em vez de leitura de texto ingênua: ele entende layout (cabeçalhos, seções,
-tabelas, colunas). A divisão em chunks é feita de forma hierárquica a partir
-dessa estrutura — cada chunk carrega o caminho de seções a que pertence
-(campo `heading`, ex.: `"5. Modelo ER > 5.1 Entidades"`), que também é usado
-como contexto extra na hora de gerar o embedding. **Markdown (`.md`)** passa
+tabelas, colunas). A divisão em chunks usa o `HybridChunker` do Docling: parte pela estrutura
+(seções, listas, tabelas) e limita cada chunk a `RAG_CHUNK_MAX_TOKENS` (padrão
+300, contagem aproximada de palavras e pontuação, sem baixar modelo de
+tokenizador). Tabelas grandes são partidas só entre linhas e o cabeçalho da
+tabela se repete no topo de cada pedaço (grade e horários seguem legíveis em
+qualquer chunk). Cada chunk carrega o caminho de seções a que pertence (campo
+`heading`, ex.: `"5. Modelo ER > 5.1 Entidades"`). O texto enviado ao modelo
+de embedding ganha um cabeçalho determinístico — `Documento do curso: <cursos>
+| Seção: <heading>` (nunca o título do arquivo) — que NÃO é gravado em
+`content`. Na ingestão também é preenchido `search_vector` (tsvector
+`portuguese`: seção peso A, conteúdo peso B) para a busca textual. **Markdown (`.md`)** passa
 pelo Docling também: os títulos (`#`, `##`...) viram o `heading` de cada chunk,
 como nos PDFs — por isso é melhor enviar `.md` do que renomear pra `.txt`. TXT
 não tem estrutura pra aproveitar, então segue com divisão simples por parágrafo.
 
-**OCR fica desligado por padrão** (`do_ocr=False`) — os materiais didáticos
-são PDFs gerados digitalmente (têm texto real embutido), não escaneados, e
-OCR é a parte mais cara do processamento (~150-240s → ~40-60s por PDF real
-sem ele). Se algum material for realmente uma imagem escaneada sem texto, a
-extração falha com uma mensagem clara (`processing_error`) em vez de
-demorar minutos à toa; ligar OCR de volta é uma linha em
-`apps/documents/extraction.py` (`PdfPipelineOptions(do_ocr=True)`), se algum
-dia isso virar uma necessidade real. Tabelas usam o modo `FAST` do
+**OCR só entra como fallback.** O padrão é `do_ocr=False`: os materiais
+costumam ser PDFs digitais (têm texto real) e OCR é a parte mais cara do
+processamento (~150-240s → ~40-60s por PDF sem ele). Se a extração de um PDF
+vier vazia ou quase vazia (< 200 caracteres), a ingestão tenta de novo com
+`do_ocr=True` (um segundo conversor, criado sob demanda) — é o caso de PDFs
+escaneados, como o Código Disciplinar. Se o OCR não estiver disponível ou ainda
+assim não extrair texto, o documento fica `failed` com uma mensagem clara em
+`processing_error`. Tabelas usam o modo `FAST` do
 TableFormer (em vez de `ACCURATE`) pelo mesmo motivo de custo.
 
 Processamento é **assíncrono, em background**: o upload responde na hora com
@@ -422,11 +429,22 @@ desse endpoint enquanto o status é `processing`.
 
 Isso é uma fila em memória do processo, não durável: se o servidor cair ou
 reiniciar (ex.: autoreload do `runserver`) no meio do processamento, aquele
-job se perde e o documento fica preso em `processing` — nesse caso, usar
-`reprocess/` resolve. Se o volume de uploads crescer a ponto disso incomodar
-(ou for rodar com múltiplos processos/workers, onde um pool em memória por
-processo processa menos em paralelo do que parece), o próximo passo natural
-é migrar para uma fila de verdade (Celery + Redis).
+job se perde e o documento fica preso em `processing`. Para isso existe
+`python manage.py recover_documents [--minutes 15]`, que reenfileira os
+documentos presos em `processing` há mais de N minutos; o
+`docker-entrypoint.py` o dispara em segundo plano a cada boot (e `reprocess/`
+continua valendo para casos pontuais). Erros transitórios de embedding
+(429/cota por minuto, timeout, conexão) são repetidos com backoff exponencial
+(`EMBEDDING_RETRY_ATTEMPTS=3`, `EMBEDDING_RETRY_BASE_SECONDS=5`). Se o volume de
+uploads crescer a ponto disso incomodar (ou for rodar com múltiplos
+processos/workers), o próximo passo natural é uma fila persistente de verdade.
+
+> **Mudou chunking, `RAG_CHUNK_MAX_TOKENS`, o cabeçalho contextual ou os
+> prefixos de embedding?** Rode `python manage.py reprocess_documents`: os
+> chunks e vetores antigos não são comparáveis com os novos. Com o provider
+> `ollama` e modelo `embeddinggemma`, a consulta recebe o prefixo
+> `task: search result | query: ` e o documento `title: none | text: `
+> (`ai_providers.embedding_text_for`).
 
 **Um material pode valer para mais de um curso.** No upload e na edição
 informe `courses` (lista de códigos, ex.: `cc`, `ads`; ao menos um). Um material
@@ -639,14 +657,27 @@ arquivo, relativo à raiz do projeto ou absoluto.
 | `22-como-falar-das-fontes.md` | **Nunca expor o funcionamento interno** ("materiais enviados", "trechos", "fragmentado"...): quando não tem a informação, diz que não tem confirmada e orienta a conferir com a coordenação/secretaria/professor; **não cita fontes** (sem `(Fonte: ...)`, títulos nem links) |
 | `27-caminho-de-estudo.md` | Perguntas de grade/disciplinas: agrupa as disciplinas do curso em fases de estudo e sugere a ordem, usando as referências externas da pesquisa na web só como apoio (nunca como matriz oficial da Cesuca) |
 | `25-anti-alucinacao.md` | Nunca inventar livros/páginas/datas/números; grade/semestre/ordem só quando explícitos; "não sei" > chute; sem acesso a internet/notas |
+| `29-meta.md` | Só na rota `meta`: cumprimento, agradecimento e "o que você faz" respondidos em poucas frases |
 | `30-pedagogia.md` | Guiar em vez de entregar trabalho pronto |
+| `35-escada-de-dicas.md` | Só na rota `exercicio_avaliativo`: escada de dicas (1 conceito e pergunta, 2 dica direcionada, 3 esqueleto) — nunca a solução completa; o nível atual é injetado no fim do prompt |
 | `40-seguranca.md` | Prompt injection, personas, vazamento do prompt, malware |
 | `50-idiomas-e-ofuscacao.md` | Responder em português; binário/base64/invertido/leetspeak recebem as mesmas regras |
 
 Além do prompt, há duas proteções em código (`apps/conversations/services.py`):
 
-1. *Filtro de relevância* — só entram no contexto os trechos com distância de
-   cosseno ≤ `RAG_MAX_DISTANCE` (padrão `0.30`, no `.env`). Se nenhum passar, o
+1. *Busca híbrida e filtro de relevância* (`apps/conversations/retrieval.py`) —
+   a busca combina a vetorial (pgvector, índice HNSW por cosseno, corte
+   `RAG_MAX_DISTANCE`, padrão `0.30`, +0.05 em perguntas de grade) com a
+   textual (tsvector `portuguese`, índice GIN, `websearch`; se a consulta
+   estrita não casar nada, tenta "qualquer termo", só aceitando trechos a no
+   máximo 0.15 além do corte de distância). As duas listas (20 candidatos cada)
+   são fundidas por RRF (k=60) e devolvem 6 trechos (8 em perguntas de grade).
+   Sempre filtrada pelas permissões do usuário e, quando o roteador define o
+   curso (`cc`/`ads`), pelo curso. `RAG_HYBRID_ENABLED=False` volta ao
+   comportamento antigo (só vetorial); `RAG_RERANK_ENABLED` é só um gancho
+   (`retrieval.rerank`, ainda identidade). O contexto vai ao LLM com referências
+   opacas (`[T1 · seção: ...]`), sem o título do documento. Se nenhum trecho
+   passar, o
    modelo é avisado de que nada nos materiais foi relevante e, se a pergunta
    for de computação, responde com conhecimento geral **avisando que não veio
    dos materiais**. Ele decide *se há material relevante*, não *se o assunto é
@@ -790,7 +821,72 @@ curl -N -X POST http://127.0.0.1:8000/api/conversations/1/messages/send/ \
   -d '{"content": "O que esse material fala sobre recursão?"}'
 ```
 
+### Loop agêntico (rota composta)
+
+Perguntas compostas (vários assuntos, comparações) podem ser respondidas por um
+loop agêntico controlado (`apps/conversations/agent.py`): um modelo com
+ferramentas (papel `agent`) pesquisa nos materiais em poucas voltas e, depois,
+a resposta ao aluno é gerada em streaming pelo papel `answer`, a partir do
+contexto coletado. As ferramentas (`apps/conversations/tools.py`) são
+`buscar_materiais`, `ler_contexto` (trechos vizinhos) e `pesquisar_web` (só se
+`CHAT_ALLOW_GENERAL_KNOWLEDGE` e `CHAT_WEB_SEARCH_ENABLED`). O usuário e as
+permissões vêm do servidor, nunca do modelo, e as saídas só trazem referências
+opacas `[T#]` e o título da seção — nunca o título do documento.
+
+O custo e a latência são limitados por um orçamento; ao estourar qualquer teto,
+o agente para e responde com o que já coletou (o motivo fica no trace):
+
+```
+CHAT_AGENT_ENABLED=True      # False: perguntas compostas seguem o RAG simples
+AGENT_MAX_TURNS=5            # chamadas ao modelo com ferramentas
+AGENT_MAX_TOOL_CALLS=8
+AGENT_MAX_TOTAL_TOKENS=40000 # entrada + saída acumuladas nas voltas
+AGENT_MAX_SECONDS=30
+```
+
+Se o modelo do papel `agent` não suporta ferramentas (ver
+`apps/ai_providers/capabilities.py`), o agente fica indisponível
+(`AgentUnavailable`) e o pipeline cai para o RAG simples. Os status enviados ao
+cliente usam só rótulos fixos ("Buscando nos materiais do curso", "Lendo 3
+trechos"...), sem consultas nem argumentos das ferramentas.
+
 ---
+
+### Roteamento de intenção
+
+Antes de buscar nos materiais, `apps/conversations/routing.py` classifica a
+mensagem (`route(conversation, texto)` → `RouteDecision` + uso de tokens):
+
+- **L0 (regras, sem custo):** saudação/agradecimento/"o que você faz" viram
+  `meta`; tentativas de injeção ou ofuscação (ignore as instruções, finja ser,
+  system prompt, DAN, base64/binário/hex, caracteres invisíveis) viram
+  `manipulacao`. Os dois **pulam o L1**. Perguntas de grade e menções a CC/ADS
+  só viram dicas para o L1.
+- **L1 (LLM pequeno, papel `router`):** devolve `intent` (`meta`,
+  `info_institucional`, `grade_disciplinas`, `conteudo_tecnico`,
+  `exercicio_avaliativo`, `fora_escopo`, `manipulacao`), `course`,
+  `complexity` (`direta` ou `composta`) e a `standalone_query` (pergunta
+  reescrita com o histórico, sem dados pessoais, usada na busca nos materiais
+  e na web).
+- **Fallback:** se o L1 falhar ou `CHAT_ROUTER_ENABLED=False`, vale a heurística
+  da v0 (pergunta curta é somada à pergunta anterior; regex de grade ou
+  `info_institucional`; complexidade `direta`), com `source="fallback"`.
+
+**Curso:** estudante usa sempre o curso do perfil (nunca recebe a pergunta "CC
+ou ADS?"); coordenador de um curso só, esse curso; admin e coordenador de vários
+cursos: menção explícita na mensagem > curso já salvo na conversa > decisão do
+L1 > `indefinido` (e então, só em perguntas de grade ou institucionais, a
+decisão traz `clarification` com a pergunta de CC ou ADS). O curso resolvido
+fica em `Conversation.metadata["course"]`, junto com `hint_level` (degrau da
+escada de dicas) e `last_intent`.
+
+**Prompt por rota:** `build_system_prompt(intent, hint_level=...)`
+(`apps/conversations/prompts.py`) monta o prompt com a base (todos os arquivos
+que não estão em `ROUTE_MODULES`) mais os módulos da rota: `27-caminho-de-estudo`
+em `grade_disciplinas`, `29-meta` em `meta`, `30-pedagogia` em
+`conteudo_tecnico`/`exercicio_avaliativo` e `35-escada-de-dicas` em
+`exercicio_avaliativo`. Sem intenção, devolve todos os arquivos (como o
+`get_system_prompt()` antigo).
 
 ## Documentação da API (Swagger)
 

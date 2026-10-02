@@ -523,6 +523,37 @@ Preencha só a chave do provider que for usar de fato.
 > materiais (`POST /api/documents/{id}/reprocess/`) — os embeddings antigos
 > não são compatíveis com uma dimensão diferente.
 
+### Alternativa local: EmbeddingGemma via Ollama
+
+Além do Gemini (padrão), o embedding pode rodar local com o
+[EmbeddingGemma](https://ollama.com/library/embeddinggemma) pelo Ollama: sem
+chave, sem cota e sem GPU (modelo pequeno, roda em CPU). Gera vetores de
+**768 dimensões**, a mesma do Gemini, então não exige migration.
+
+```bash
+ollama pull embeddinggemma
+```
+
+```env
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=embeddinggemma
+EMBEDDING_DIMENSIONS=768
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Ao trocar de modelo com materiais já processados:
+
+1. `python manage.py test_ai_provider` — confirma o provider e a dimensão (se o
+   modelo devolver outro tamanho, o erro agora diz isso claramente).
+2. `python manage.py reprocess_documents` — refaz chunks e embeddings de todos
+   os materiais. Vetores de modelos diferentes não são comparáveis, então
+   misturar dá buscas sem sentido.
+3. Reavalie `RAG_MAX_DISTANCE` (0.30 foi calibrado com o Gemini) e rode
+   `python manage.py test_guardrails`.
+
+O Gemini continua sendo o padrão e o que o time usa; o EmbeddingGemma é uma
+opção em avaliação (ainda não validada como padrão de produção).
+
 Pra testar se as chaves configuradas no `.env` estão funcionando, sem
 precisar subir o servidor nem fazer upload de nada:
 

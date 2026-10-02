@@ -129,6 +129,11 @@ Para subir API, frontend e Postgres (com pgvector) juntos via Docker, use o
 `docker compose up --build` na raiz do [CesucaCode-hub](https://github.com/jvpgjava/CesucaCode-hub).
 O `Dockerfile` deste repositório é o da API; o Compose do hub orquestra os três serviços.
 
+**Produção:** o `Dockerfile` usa `runserver` (desenvolvimento). Em produção use
+`gunicorn config.wsgi:application -c gunicorn.conf.py`: o arquivo configura
+workers `gthread` (8 threads) e timeout de 120 s, porque cada resposta do chat é
+um stream longo que travaria um worker `sync` inteiro.
+
 ---
 
 ## Rodando no dia a dia (depois do setup inicial)
@@ -487,9 +492,36 @@ o embedding são **independentes**: dá pra usar um provider pra conversa e
 outro pra gerar os vetores dos documentos.
 
 **Chat** (`LLM_PROVIDER`): `gemini`, `openai`, `claude`, `ollama`,
-`deepseek` ou `abacusai`. `deepseek` e `abacusai` usam a API compatível com
-OpenAI de cada um (com `base_url` próprio), então reaproveitam o mesmo
-pacote (`langchain-openai`).
+`deepseek`, `abacusai` ou `openrouter`. `deepseek`, `abacusai` e `openrouter`
+usam a API compatível com OpenAI de cada um (com `base_url` próprio), então
+reaproveitam o mesmo pacote (`langchain-openai`). No OpenRouter o modelo vai
+no formato `provedor/modelo` (ex.: `google/gemini-2.5-flash`) e a chave em
+`OPENROUTER_API_KEY`.
+
+**Papéis de modelo:** `get_chat_model(role)` aceita `answer` (resposta final,
+padrão), `router` (classificador de intenção), `agent` (passos do loop
+agêntico) e `judge` (avaliação). Cada papel pode ter seu próprio provider e
+modelo, o que permite, por exemplo, um modelo barato só para o roteador:
+
+```env
+LLM_ROUTER_PROVIDER=openrouter
+LLM_ROUTER_MODEL=google/gemini-2.5-flash-lite
+# também: LLM_<PAPEL>_MAX_TOKENS e LLM_<PAPEL>_TEMPERATURE
+```
+
+O que não for definido cai em `LLM_PROVIDER`/`LLM_MODEL`. Padrões de
+`max_tokens`/temperatura: answer 1500/0.3, router 256/0, agent 1024/0.2,
+judge 512/0. Globais: `LLM_TIMEOUT` (60 s), `LLM_MAX_RETRIES` (2),
+`LLM_STRUCTURED_METHOD` (força `json_schema`, `function_calling` ou
+`json_mode`; vazio usa o registro de capacidades em
+`apps/ai_providers/capabilities.py`) e `LLM_THINKING_BUDGET` (Gemini; vazio =
+padrão do modelo). Atenção: no Gemini com thinking, `max_tokens` também conta
+os tokens de raciocínio; se as respostas vierem cortadas, aumente o limite ou
+reduza o `LLM_THINKING_BUDGET`.
+
+`invoke_structured(Schema, messages, role)` pede saída estruturada com 1 retry
+de reparo e nunca levanta exceção de provider (devolve `ok=False` e o valor
+padrão).
 
 **Embedding** (`EMBEDDING_PROVIDER`): `gemini` ou `ollama` — os dois
 providers testados que têm uma API de embedding simples (texto entra, vetor
@@ -510,6 +542,7 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 DEEPSEEK_API_KEY=
 ABACUSAI_API_KEY=
+OPENROUTER_API_KEY=
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
@@ -563,6 +596,16 @@ python manage.py test_ai_provider
 
 Isso manda uma mensagem simples pro chat e gera um embedding de teste,
 mostrando se cada provider respondeu certo ou qual foi o erro.
+
+Para validar o contrato de um papel de modelo (rode sempre que trocar de
+provider ou modelo; consome tokens reais):
+
+```bash
+python manage.py test_ai_provider --role router --check stream,tools,structured
+```
+
+`stream` confere o streaming e o `usage_metadata`, `tools` faz um tool calling
+simples e `structured` testa a saída estruturada com o método do registro.
 
 ---
 
@@ -643,9 +686,28 @@ Além do prompt, há duas proteções em código (`apps/conversations/services.p
    (`5`) e `CHAT_WEB_SEARCH_TIMEOUT` (`8`). Ignorada no modo estrito. Adiciona
    alguns segundos à primeira resposta dessas perguntas.
 
-Não há limite de quantidade de mensagens por usuário nem limite imposto ao
-modelo (tokens, temperatura etc.) — só o teto de histórico acima, que é
-janela de contexto.
+7. *Referências opacas* — o contexto enviado ao modelo identifica cada trecho
+   como `[T1 · seção: <título da seção>]` (ou só `[T1]`); o título do documento
+   nunca vai ao prompt, e o prompt manda não citar essas referências.
+8. *Guarda de saída* (`apps/conversations/guard.py`) — ao fim de cada resposta,
+   confere vazamentos: vocabulário interno (`INTERNAL_TERMS`), trechos do
+   prompt (`LEAK_FRAGMENTS`), títulos de documentos que o usuário enxerga
+   (com ≥ 2 palavras e ≥ 8 caracteres, sem acento/extensão — títulos de uma
+   palavra só geram falso positivo) e referências `[T#]`. As flags vão para o
+   trace e as referências são removidas do texto **salvo**. Como a resposta é
+   transmitida por streaming, a guarda não desfaz o que o aluno já viu.
+9. *Rastreamento (`MessageTrace`)* — cada resposta grava, no admin (somente
+   leitura), versão do pipeline, rota, modelos, tokens, latência, tempo até o
+   primeiro token, etapas, ids/distâncias dos trechos e flags da guarda. Não guarda
+   texto do aluno nem da resposta.
+10. *Limite de uso* — por usuário, `CHAT_THROTTLE_RATE` (padrão `20/min`) e
+    `CHAT_DAILY_THROTTLE_RATE` (padrão `300/day`) no envio de mensagens; passou
+    do limite, responde `429` com mensagem em português e `Retry-After`. O
+    contador usa o cache do Django (em memória por padrão: com vários
+    processos, configure um cache compartilhado).
+
+Não há limite imposto ao modelo (tokens, temperatura etc.) além do teto de
+histórico, que é janela de contexto.
 
 O prompt reduz bastante, mas não elimina, a chance de burlar as regras com
 pedidos elaborados — reveja os arquivos conforme surgirem casos novos.
@@ -686,26 +748,38 @@ Todas as rotas ficam sob `/api/conversations/`:
 | GET | `/api/conversations/{id}/messages/` | Histórico completo de mensagens |
 | POST | `/api/conversations/{id}/messages/send/` | Enviar uma mensagem — resposta em streaming |
 | GET | `/api/conversations/suggestions/` | Sugestões de perguntas prontas, de acordo com os materiais que eu posso ver |
-| PATCH | `/api/conversations/{id}/messages/{message_id}/feedback/` | Avaliar uma resposta: `{"rating": 1}` (👍), `{"rating": -1}` (👎) ou `null` (remove) |
+| PATCH | `/api/conversations/{id}/messages/{message_id}/feedback/` | Avaliar uma resposta: `{"feedback": 1}` (👍), `{"feedback": -1, "reason": "incorreta", "comment": "..."}` (👎 com motivo opcional) ou `{"feedback": null}` (remove). `reason`: `incorreta`, `incompleta`, `nao_entendeu`, `fora_do_curso`, `outro`; `comment` até 500 caracteres; ao voltar para 👍/`null` os dois são apagados. `rating` segue aceito como alias de `feedback` |
 
 O envio de mensagem **não devolve um JSON único** — a resposta vem em
 tempo real via [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
 (`Content-Type: text/event-stream`), pedaço por pedaço, do mesmo jeito que
-ChatGPT/Claude mostram a resposta "sendo digitada". Cada evento vem como:
+ChatGPT/Claude mostram a resposta "sendo digitada". Corpo da requisição:
+`{"content": "...", "regenerate": false}`. Eventos:
 
 ```
+event: meta
+data: {"user_message_id": 123, "route": null}
+
+event: status
+data: {"step": "searching", "label": "Buscando nos materiais do curso"}
+
 data: {"content": "pedaço de texto"}
 
-data: {"content": "mais um pedaço"}
+event: suggestions
+data: {"items": ["Pergunta 1?", "Pergunta 2?"]}
 
 event: done
-data: {}
+data: {"message_id": 456}
 ```
 
-(ou `event: error` se algo falhar no meio do caminho). A mensagem do
-usuário e a resposta completa do assistente são salvas no banco
-automaticamente — não precisa (nem dá pra) mandar a resposta de volta pra
-API depois.
+(ou `event: error` com `{"message": "texto amigável"}` se algo falhar). Os
+tokens usam o formato padrão (sem `event:`), compatível com clientes que só leem
+`data: {"content": ...}`. Os rótulos de `status` vêm de um dicionário fixo
+(`apps/conversations/events.py`) e nunca carregam argumentos internos.
+`regenerate: true` apaga a última resposta e a pergunta que a gerou e processa
+`content` como nova. A mensagem do usuário é salva antes de gerar e a resposta do
+assistente ao final (se o cliente desconectar, fica o texto parcial) — não
+precisa (nem dá pra) mandar a resposta de volta pra API depois.
 
 Exemplo com curl (`-N` desativa o buffer, pra ver o streaming chegando aos
 poucos):

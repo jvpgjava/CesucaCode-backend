@@ -49,10 +49,14 @@ extend_schema_view(
             "mesmo critério de permissão dos materiais), monta o prompt com o histórico da "
             "conversa e transmite a resposta do modelo em tempo real via "
             "[Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events) "
-            "(`Content-Type: text/event-stream`), não como um JSON único. Cada evento vem no "
-            "formato `data: {\"content\": \"...\"}`; ao final, um evento `event: done` fecha o "
-            "stream, ou `event: error` se algo falhar. A mensagem do usuário e a resposta "
-            "completa do assistente são salvas no banco."
+            "(`Content-Type: text/event-stream`), não como um JSON único. Eventos: `meta` "
+            "(`user_message_id`, `route`), `status` (`step`, `label` — rótulo fixo da etapa), "
+            "tokens no formato padrão `data: {\"content\": \"...\"}`, `suggestions` (`items`), "
+            "`done` (`message_id` da resposta salva) e `error` (`message`). Com "
+            "`regenerate: true`, apaga a última resposta (e a pergunta que a gerou) e processa "
+            "`content` como nova. A mensagem do usuário e a resposta do assistente são salvas "
+            "no banco (a parcial, se o cliente desconectar). Limite por usuário: 20/min e "
+            "300/dia (429 com `Retry-After`)."
         ),
         responses={200: OpenApiResponse(description="Stream de eventos (text/event-stream).")},
         tags=CONVERSATIONS,
@@ -73,7 +77,12 @@ extend_schema_view(
 extend_schema_view(
     patch=extend_schema(
         summary="Avaliar uma resposta (👍/👎)",
-        description="`rating`: 1 = útil, -1 = não útil, null = remove a avaliação. Só mensagens do assistente.",
+        description=(
+            "`feedback`: 1 = útil, -1 = não útil, null = remove a avaliação (`rating` segue aceito "
+            "como alias). No 👎, `reason` (incorreta, incompleta, nao_entendeu, fora_do_curso, outro) "
+            "e `comment` (até 500 caracteres) são opcionais; ao mudar para 1 ou null, são apagados. "
+            "Só mensagens do assistente."
+        ),
         request=MessageFeedbackSerializer,
         tags=CONVERSATIONS,
     ),

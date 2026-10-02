@@ -8,6 +8,8 @@ from .models import Document, DocumentChunk
 from .permissions import can_delete_document, coordinated_course_ids
 
 MAX_FILE_SIZE_MB = 20
+# Campos de gestão que o estudante não vê no DocumentSerializer.
+STUDENT_HIDDEN_FIELDS = ("file", "uploaded_by_name", "processing_error")
 
 
 class DocumentSerializer(serializers.ModelSerializer):
@@ -23,6 +25,17 @@ class DocumentSerializer(serializers.ModelSerializer):
             "status", "processing_error", "chunk_count", "can_delete", "created_at",
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Estudante só precisa saber quais materiais existem: o arquivo, quem
+        # enviou e o erro de processamento são de gestão (ficam só para
+        # admin/coordenador).
+        request = self.context.get("request")
+        if request is None or request.user.role == User.Role.CS_STUDENT:
+            for field in STUDENT_HIDDEN_FIELDS:
+                data.pop(field, None)
+        return data
 
     def get_chunk_count(self, obj):
         return obj.chunks.count()

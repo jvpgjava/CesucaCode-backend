@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 from django.conf import settings
@@ -9,8 +10,10 @@ from apps.ai_providers import services as ai_providers
 from apps.documents.models import DocumentChunk
 from apps.documents.views import get_documents_queryset
 
-from . import web_search
+from . import guard, web_search
+from .events import DoneEvent, ErrorEvent, MetaEvent, TokenEvent, status
 from .models import Conversation, Message
+from .tracing import TraceRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +30,7 @@ REFUSAL_MESSAGE = (
     "Não consegui processar essa mensagem. Posso ajudar com dúvidas de computação "
     "dos cursos de CC e ADS — pode reformular a pergunta em texto simples?"
 )
-_PROVIDER_REFUSAL_MARKERS = ("content violation", "content_filter", "content filter", "safety")
-
-
-def _is_provider_refusal(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return any(marker in text for marker in _PROVIDER_REFUSAL_MARKERS)
+ERROR_MESSAGE = "Falha ao gerar resposta. Tente novamente."
 
 
 def get_system_prompt() -> str:
@@ -119,19 +117,34 @@ def build_search_text(conversation: Conversation, user_text: str) -> str:
 
 
 def build_context_block(chunks) -> str:
+    """Monta o contexto com referências opacas: "[T1 · seção: <título da seção>]".
+    O título do documento NUNCA entra no prompt (o modelo não tem o que vazar);
+    a referência existe só pra ele se orientar e não deve ser citada."""
     if not chunks:
         return ""
-    parts = [f"[Origem: {chunk.document.title}]\n{chunk.content}" for chunk in chunks]
+    parts = []
+    for i, chunk in enumerate(chunks, 1):
+        heading = " ".join((getattr(chunk, "heading", "") or "").split())
+        ref = f"[T{i} · seção: {heading}]" if heading else f"[T{i}]"
+        parts.append(f"{ref}\n{chunk.content}")
     return "\n\n---\n\n".join(parts)
 
 
-def build_messages(conversation: Conversation, user_text: str, context_block: str, web_block: str = ""):
+def build_messages(
+    conversation: Conversation,
+    user_text: str,
+    context_block: str,
+    web_block: str = "",
+    history: list[Message] | None = None,
+):
+    """`history` permite informar o histórico já lido (anterior à mensagem
+    atual); sem ele, usa todas as mensagens salvas da conversa."""
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
     system_text = f"{get_system_prompt()}\n\n{build_user_profile_block(conversation.user)}"
     messages = [SystemMessage(content=system_text)]
 
-    history = list(conversation.messages.all())
+    history = list(conversation.messages.all()) if history is None else history
     skip = set()
     for i, past in enumerate(history[:-1]):
         nxt = history[i + 1]
@@ -171,54 +184,136 @@ def build_messages(conversation: Conversation, user_text: str, context_block: st
     return messages
 
 
-def send_message(conversation: Conversation, user_text: str):
-    search_text = build_search_text(conversation, user_text)
-    # Em pergunta de grade/disciplinas a resposta precisa do conjunto todo (a grade
-    # se espalha por vários trechos, todos perto do limite de relevância), então
-    # busca mais trechos e aceita uma distância um pouco maior.
-    curriculum = web_search.is_curriculum_question(search_text)
-    context_chunks = retrieve_context(
-        conversation.user,
-        search_text,
-        top_k=CURRICULUM_TOP_K_CHUNKS if curriculum else TOP_K_CHUNKS,
-        max_distance=settings.RAG_MAX_DISTANCE + (CURRICULUM_EXTRA_DISTANCE if curriculum else 0),
-    )
-    context_block = build_context_block(context_chunks)
-    # Referências externas (pesquisa na web) só em perguntas de grade/disciplinas
-    # e não no modo estrito, que restringe a resposta ao que a instituição enviou.
-    web_block = (
-        web_search.build_web_block(conversation.user, search_text)
-        if settings.CHAT_ALLOW_GENERAL_KNOWLEDGE
-        else ""
-    )
-    messages = build_messages(conversation, user_text, context_block, web_block)
+def _text_of(content) -> str:
+    """Texto de um chunk do LLM. Alguns providers devolvem uma lista de blocos
+    (`{"type": "text", "text": ...}`) em vez de string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) and block.get("type") == "text" else block
+            for block in content
+            if isinstance(block, (str, dict))
+        )
+    return ""
 
-    Message.objects.create(conversation=conversation, role=Message.Role.USER, content=user_text)
-    if not conversation.title:
-        conversation.title = user_text[:80]
-    conversation.save(update_fields=["title", "updated_at"])
 
-    chat_model = ai_providers.get_chat_model()
-    full_response = []
+def delete_last_exchange(conversation: Conversation) -> None:
+    """Regenerar: apaga a última resposta do assistente e a pergunta que a gerou
+    (só se estiverem no fim da conversa, nessa ordem). Se a conversa terminar numa
+    pergunta sem resposta (falha anterior), apaga só ela."""
+    last = conversation.messages.order_by("-id").first()
+    if last is None:
+        return
+    to_delete = [last.id]
+    if last.role == Message.Role.ASSISTANT:
+        previous = conversation.messages.filter(id__lt=last.id).order_by("-id").first()
+        if previous is not None and previous.role == Message.Role.USER:
+            to_delete.append(previous.id)
+    conversation.messages.filter(id__in=to_delete).delete()
+
+
+def send_message(conversation: Conversation, user_text: str, *, regenerate: bool = False) -> Iterator:
+    """Processa uma mensagem do usuário e emite eventos tipados (ver events.py):
+    meta -> status... -> tokens... -> done (ou error).
+
+    - A mensagem do usuário é salva antes de gerar a resposta.
+    - A do assistente é salva no `finally`: também quando o cliente desconecta
+      (GeneratorExit), caso em que fica o texto parcial.
+    - A guarda de saída roda sobre o texto final. Como a resposta já foi
+      transmitida por streaming, ela não desfaz o que o aluno viu: grava as flags
+      no trace e salva a versão sem referências `[T#]`.
+    """
+    recorder = TraceRecorder()
+    answer_model = getattr(settings, "LLM_ANSWER_MODEL", "") or settings.LLM_MODEL
+    recorder.set(route="legacy", route_source="legacy", models={"answer": answer_model})
+
+    if regenerate:
+        delete_last_exchange(conversation)
+
+    full_response: list[str] = []
+    error: str | None = None
+    failed = False
+    saved: Message | None = None
     try:
+        search_text = build_search_text(conversation, user_text)
+        history = list(conversation.messages.all())
+
+        user_message = Message.objects.create(conversation=conversation, role=Message.Role.USER, content=user_text)
+        if not conversation.title:
+            conversation.title = user_text[:80]
+        conversation.save(update_fields=["title", "updated_at"])
+        yield MetaEvent(user_message_id=user_message.id, route=None)
+
+        yield status("searching")
+        # Em pergunta de grade/disciplinas a resposta precisa do conjunto todo (a grade
+        # se espalha por vários trechos, todos perto do limite de relevância), então
+        # busca mais trechos e aceita uma distância um pouco maior.
+        curriculum = web_search.is_curriculum_question(search_text)
+        with recorder.step("retrieval", "vector_search", curriculum=curriculum) as step_meta:
+            context_chunks = retrieve_context(
+                conversation.user,
+                search_text,
+                top_k=CURRICULUM_TOP_K_CHUNKS if curriculum else TOP_K_CHUNKS,
+                max_distance=settings.RAG_MAX_DISTANCE + (CURRICULUM_EXTRA_DISTANCE if curriculum else 0),
+            )
+            step_meta["n_chunks"] = len(context_chunks)
+        recorder.set(
+            chunk_ids=[chunk.id for chunk in context_chunks],
+            distances=[round(float(chunk.distance), 4) for chunk in context_chunks],
+        )
+        context_block = build_context_block(context_chunks)
+
+        # Referências externas (pesquisa na web) só em perguntas de grade/disciplinas
+        # e não no modo estrito, que restringe a resposta ao que a instituição enviou.
+        web_block = ""
+        if settings.CHAT_ALLOW_GENERAL_KNOWLEDGE and settings.CHAT_WEB_SEARCH_ENABLED and curriculum:
+            yield status("web")
+            with recorder.step("web", "search") as step_meta:
+                web_block = web_search.build_web_block(conversation.user, search_text)
+                step_meta["used"] = bool(web_block)
+        messages = build_messages(conversation, user_text, context_block, web_block, history=history)
+
+        yield status("writing")
+        chat_model = ai_providers.get_chat_model()
         try:
             for chunk in chat_model.stream(messages):
-                piece = chunk.content
+                if getattr(chunk, "usage_metadata", None):
+                    recorder.add_usage(ai_providers.extract_usage(chunk))
+                piece = _text_of(chunk.content)
                 if piece:
+                    recorder.mark_first_token()
                     full_response.append(piece)
-                    yield piece
+                    yield TokenEvent(piece)
         except Exception as exc:
-            if full_response or not _is_provider_refusal(exc):
+            if full_response or not ai_providers.is_provider_refusal(exc):
                 raise
             logger.warning("Provedor recusou a mensagem da conversa %s: %s", conversation.id, exc)
+            error = "provider_refusal"
 
         if not full_response:
             full_response.append(REFUSAL_MESSAGE)
-            yield REFUSAL_MESSAGE
+            yield TokenEvent(REFUSAL_MESSAGE)
+    except Exception as exc:
+        logger.exception("Falha ao gerar resposta para a conversa %s", conversation.id)
+        error = f"{type(exc).__name__}: {exc}"
+        failed = True
+        yield ErrorEvent(ERROR_MESSAGE)
     finally:
+        # Roda também em GeneratorExit (cliente desconectou): salva o parcial.
         if full_response:
-            Message.objects.create(
-                conversation=conversation,
-                role=Message.Role.ASSISTANT,
-                content="".join(full_response),
-            )
+            text = "".join(full_response)
+            try:
+                titles = list(get_documents_queryset(conversation.user).values_list("title", flat=True))
+                flags = guard.check_output(text, document_titles=titles)
+                if flags:
+                    logger.warning("Guarda de saída (conversa %s): %s", conversation.id, flags)
+                    recorder.set(guard_flags=flags)
+                    text = guard.redact(text, flags)
+            except Exception:
+                logger.exception("Falha na guarda de saída da conversa %s", conversation.id)
+            saved = Message.objects.create(conversation=conversation, role=Message.Role.ASSISTANT, content=text)
+            recorder.finish(saved, error=error)
+
+    if saved is not None and not failed:
+        yield DoneEvent(message_id=saved.id)

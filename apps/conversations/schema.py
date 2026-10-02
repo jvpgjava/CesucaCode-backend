@@ -45,12 +45,14 @@ extend_schema_view(
     post=extend_schema(
         summary="Enviar uma mensagem (streaming)",
         description=(
-            "Busca os trechos de material didático mais relevantes (RAG, escopado pelo "
-            "mesmo critério de permissão dos materiais), monta o prompt com o histórico da "
+            "Classifica a intenção da mensagem, busca os trechos de material didático mais "
+            "relevantes (RAG, escopado pelo mesmo critério de permissão dos materiais), "
+            "monta o prompt com o histórico da "
             "conversa e transmite a resposta do modelo em tempo real via "
             "[Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events) "
             "(`Content-Type: text/event-stream`), não como um JSON único. Eventos: `meta` "
-            "(`user_message_id`, `route`), `status` (`step`, `label` — rótulo fixo da etapa), "
+            "(`user_message_id` e `route`: meta, recusa, direta, composta, pedagogica ou "
+            "clarificacao), `status` (`step`, `label` — rótulo fixo da etapa), "
             "tokens no formato padrão `data: {\"content\": \"...\"}`, `suggestions` (`items`), "
             "`done` (`message_id` da resposta salva) e `error` (`message`). Com "
             "`regenerate: true`, apaga a última resposta (e a pergunta que a gerou) e processa "

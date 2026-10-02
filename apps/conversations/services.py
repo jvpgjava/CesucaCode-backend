@@ -5,13 +5,9 @@ from pathlib import Path
 from django.conf import settings
 
 from apps.accounts.models import User
-from apps.ai_providers import services as ai_providers
-from apps.documents.views import get_documents_queryset
 
-from . import guard, retrieval, web_search
-from .events import DoneEvent, ErrorEvent, MetaEvent, TokenEvent, status
+from . import retrieval
 from .models import Conversation, Message
-from .tracing import TraceRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -114,21 +110,12 @@ def build_context_block(chunks) -> str:
     return retrieval.format_context([(f"T{i}", chunk) for i, chunk in enumerate(chunks, 1)])
 
 
-def build_messages(
-    conversation: Conversation,
-    user_text: str,
-    context_block: str,
-    web_block: str = "",
-    history: list[Message] | None = None,
-):
-    """`history` permite informar o histórico já lido (anterior à mensagem
-    atual); sem ele, usa todas as mensagens salvas da conversa."""
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+def history_messages(history: list[Message]) -> list:
+    """Histórico (anterior à mensagem atual) no formato do LangChain, já filtrado:
+    sem pares pergunta+recusa do provedor, limitado a `CHAT_MAX_HISTORY_MESSAGES` e
+    começando sempre por uma mensagem do usuário."""
+    from langchain_core.messages import AIMessage, HumanMessage
 
-    system_text = f"{get_system_prompt()}\n\n{build_user_profile_block(conversation.user)}"
-    messages = [SystemMessage(content=system_text)]
-
-    history = list(conversation.messages.all()) if history is None else history
     skip = set()
     for i, past in enumerate(history[:-1]):
         nxt = history[i + 1]
@@ -142,13 +129,15 @@ def build_messages(
     kept = [m for m in history if m.id not in skip][-settings.CHAT_MAX_HISTORY_MESSAGES :]
     if kept and kept[0].role == Message.Role.ASSISTANT:
         kept = kept[1:]
+    return [
+        HumanMessage(content=past.content) if past.role == Message.Role.USER else AIMessage(content=past.content)
+        for past in kept
+    ]
 
-    for past in kept:
-        if past.role == Message.Role.USER:
-            messages.append(HumanMessage(content=past.content))
-        else:
-            messages.append(AIMessage(content=past.content))
 
+def compose_question(user_text: str, context_block: str, web_block: str = "", notes: tuple[str, ...] = ()) -> str:
+    """Último turno do usuário: contexto (ou aviso de que não há) + referências
+    externas + pergunta + `notes` (instruções extras do pipeline, ao final)."""
     if context_block:
         sections = [f"Contexto dos materiais didáticos:\n\n{context_block}"]
     elif settings.CHAT_ALLOW_GENERAL_KNOWLEDGE:
@@ -163,9 +152,35 @@ def build_messages(
     if web_block:
         sections.append(web_block)
     sections.append(f"Pergunta: {user_text}")
+    sections.extend(notes)
+    return "\n\n---\n\n".join(sections)
 
-    messages.append(HumanMessage(content="\n\n---\n\n".join(sections)))
-    return messages
+
+def build_messages(
+    conversation: Conversation,
+    user_text: str,
+    context_block: str,
+    web_block: str = "",
+    history: list[Message] | None = None,
+    *,
+    system_text: str | None = None,
+    notes: tuple[str, ...] = (),
+):
+    """Mensagens para o LLM: system (prompt + perfil) + histórico + pergunta com contexto.
+
+    `history` permite informar o histórico já lido (anterior à mensagem atual); sem
+    ele, usa todas as mensagens salvas. `system_text` substitui o prompt completo
+    (o pipeline passa o prompt por rota, já com o bloco de perfil)."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    if system_text is None:
+        system_text = f"{get_system_prompt()}\n\n{build_user_profile_block(conversation.user)}"
+    history = list(conversation.messages.all()) if history is None else history
+    return [
+        SystemMessage(content=system_text),
+        *history_messages(history),
+        HumanMessage(content=compose_question(user_text, context_block, web_block, notes)),
+    ]
 
 
 def _text_of(content) -> str:
@@ -199,105 +214,8 @@ def delete_last_exchange(conversation: Conversation) -> None:
 
 def send_message(conversation: Conversation, user_text: str, *, regenerate: bool = False) -> Iterator:
     """Processa uma mensagem do usuário e emite eventos tipados (ver events.py):
-    meta -> status... -> tokens... -> done (ou error).
+    status... -> meta -> status... -> tokens... -> suggestions -> done (ou error).
+    A orquestração (roteamento, retrieval, agente, guarda, trace) vive em `pipeline`."""
+    from . import pipeline  # import tardio: o pipeline usa helpers deste módulo
 
-    - A mensagem do usuário é salva antes de gerar a resposta.
-    - A do assistente é salva no `finally`: também quando o cliente desconecta
-      (GeneratorExit), caso em que fica o texto parcial.
-    - A guarda de saída roda sobre o texto final. Como a resposta já foi
-      transmitida por streaming, ela não desfaz o que o aluno viu: grava as flags
-      no trace e salva a versão sem referências `[T#]`.
-    """
-    recorder = TraceRecorder()
-    answer_model = getattr(settings, "LLM_ANSWER_MODEL", "") or settings.LLM_MODEL
-    recorder.set(route="legacy", route_source="legacy", models={"answer": answer_model})
-
-    if regenerate:
-        delete_last_exchange(conversation)
-
-    full_response: list[str] = []
-    error: str | None = None
-    failed = False
-    saved: Message | None = None
-    try:
-        search_text = build_search_text(conversation, user_text)
-        history = list(conversation.messages.all())
-
-        user_message = Message.objects.create(conversation=conversation, role=Message.Role.USER, content=user_text)
-        if not conversation.title:
-            conversation.title = user_text[:80]
-        conversation.save(update_fields=["title", "updated_at"])
-        yield MetaEvent(user_message_id=user_message.id, route=None)
-
-        yield status("searching")
-        # Em pergunta de grade/disciplinas a resposta precisa do conjunto todo (a grade
-        # se espalha por vários trechos, todos perto do limite de relevância), então
-        # busca mais trechos e aceita uma distância um pouco maior.
-        curriculum = web_search.is_curriculum_question(search_text)
-        with recorder.step("retrieval", "vector_search", curriculum=curriculum) as step_meta:
-            context_chunks = retrieve_context(
-                conversation.user,
-                search_text,
-                top_k=CURRICULUM_TOP_K_CHUNKS if curriculum else TOP_K_CHUNKS,
-                max_distance=settings.RAG_MAX_DISTANCE + (CURRICULUM_EXTRA_DISTANCE if curriculum else 0),
-            )
-            step_meta["n_chunks"] = len(context_chunks)
-        recorder.set(
-            chunk_ids=[chunk.id for chunk in context_chunks],
-            distances=[round(float(chunk.distance), 4) for chunk in context_chunks],
-        )
-        context_block = build_context_block(context_chunks)
-
-        # Referências externas (pesquisa na web) só em perguntas de grade/disciplinas
-        # e não no modo estrito, que restringe a resposta ao que a instituição enviou.
-        web_block = ""
-        if settings.CHAT_ALLOW_GENERAL_KNOWLEDGE and settings.CHAT_WEB_SEARCH_ENABLED and curriculum:
-            yield status("web")
-            with recorder.step("web", "search") as step_meta:
-                web_block = web_search.build_web_block(conversation.user, search_text)
-                step_meta["used"] = bool(web_block)
-        messages = build_messages(conversation, user_text, context_block, web_block, history=history)
-
-        yield status("writing")
-        chat_model = ai_providers.get_chat_model()
-        try:
-            for chunk in chat_model.stream(messages):
-                if getattr(chunk, "usage_metadata", None):
-                    recorder.add_usage(ai_providers.extract_usage(chunk))
-                piece = _text_of(chunk.content)
-                if piece:
-                    recorder.mark_first_token()
-                    full_response.append(piece)
-                    yield TokenEvent(piece)
-        except Exception as exc:
-            if full_response or not ai_providers.is_provider_refusal(exc):
-                raise
-            logger.warning("Provedor recusou a mensagem da conversa %s: %s", conversation.id, exc)
-            error = "provider_refusal"
-
-        if not full_response:
-            full_response.append(REFUSAL_MESSAGE)
-            yield TokenEvent(REFUSAL_MESSAGE)
-    except Exception as exc:
-        logger.exception("Falha ao gerar resposta para a conversa %s", conversation.id)
-        error = f"{type(exc).__name__}: {exc}"
-        failed = True
-        yield ErrorEvent(ERROR_MESSAGE)
-    finally:
-        # Roda também em GeneratorExit (cliente desconectou): salva o parcial.
-        if full_response:
-            text = "".join(full_response)
-            try:
-                titles = list(get_documents_queryset(conversation.user).values_list("title", flat=True))
-                flags = guard.check_output(text, document_titles=titles)
-                if flags:
-                    logger.warning("Guarda de saída (conversa %s): %s", conversation.id, flags)
-                    recorder.set(guard_flags=flags)
-                    text = guard.redact(text, flags)
-            except Exception:
-                logger.exception("Falha na guarda de saída da conversa %s", conversation.id)
-            saved = Message.objects.create(conversation=conversation, role=Message.Role.ASSISTANT, content=text)
-            recorder.finish(saved, error=error)
-
-    if saved is not None and not failed:
-        yield DoneEvent(message_id=saved.id)
+    return pipeline.run(conversation, user_text, regenerate=regenerate)

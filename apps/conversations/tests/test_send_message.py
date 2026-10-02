@@ -1,11 +1,20 @@
 import json
-from types import SimpleNamespace
-
 import pytest
 
-from apps.conversations import services
+from apps.conversations import retrieval, services
 from apps.conversations.events import DoneEvent, ErrorEvent, MetaEvent, StatusEvent, TokenEvent
 from apps.conversations.models import Message, MessageTrace
+from apps.conversations.retrieval import RetrievedChunk
+
+
+@pytest.fixture(autouse=True)
+def _variante_v0(settings):
+    """Estes testes exercitam o envio/salvamento/guarda/regenerate com o pipeline na
+    variante v0 (sem roteador LLM, suficiência nem follow-ups). O pipeline completo é
+    coberto em test_pipeline.py."""
+    settings.CHAT_ROUTER_ENABLED = False
+    settings.CHAT_SUFFICIENCY_CHECK_ENABLED = False
+    settings.CHAT_FOLLOWUPS_ENABLED = False
 
 
 def _run(conversation, text, **kwargs):
@@ -17,30 +26,31 @@ def test_fluxo_feliz_emite_eventos_na_ordem_e_salva_tudo(conversation, fake_llm)
 
     events = _run(conversation, "O que é uma pilha?")
 
-    assert isinstance(events[0], MetaEvent) and events[0].route is None
+    assert isinstance(events[0], StatusEvent) and events[0].step == "routing"
+    assert isinstance(events[1], MetaEvent) and events[1].route == "direta"
     steps = [e.step for e in events if isinstance(e, StatusEvent)]
-    assert steps == ["searching", "writing"]
+    assert steps == ["routing", "searching", "writing"]
     assert "".join(e.content for e in events if isinstance(e, TokenEvent)) == "Uma pilha é LIFO."
     assert isinstance(events[-1], DoneEvent)
 
     user_msg, answer = conversation.messages.all()
-    assert user_msg.role == "user" and events[0].user_message_id == user_msg.id
+    assert user_msg.role == "user" and events[1].user_message_id == user_msg.id
     assert answer.content == "Uma pilha é LIFO." and events[-1].message_id == answer.id
     conversation.refresh_from_db()
     assert conversation.title == "O que é uma pilha?"
 
 
-def test_trace_legado_com_tokens_e_ttft(conversation, fake_llm, settings):
+def test_trace_com_tokens_e_ttft(conversation, fake_llm, settings):
     fake_llm("oi", usage={"input_tokens": 12, "output_tokens": 3, "total_tokens": 15})
 
-    _run(conversation, "Oi")
+    _run(conversation, "Como funciona a avaliação?")
 
     trace = conversation.messages.get(role="assistant").trace
-    assert (trace.route, trace.route_source) == ("legacy", "legacy")
+    assert (trace.route, trace.route_source) == ("direta", "fallback")
     assert (trace.input_tokens, trace.output_tokens) == (12, 3)
     assert trace.ttft_ms is not None
     assert trace.models == {"answer": settings.LLM_MODEL}
-    assert [s["type"] for s in trace.steps] == ["retrieval"]
+    assert [s["type"] for s in trace.steps] == ["routing", "retrieval", "llm"]
     assert trace.pipeline_version == settings.PIPELINE_VERSION
 
 
@@ -53,12 +63,11 @@ def test_usage_ausente_nao_quebra(conversation, fake_llm):
 
 def test_contexto_usa_refs_opacas_sem_titulo_do_documento(conversation, fake_llm, monkeypatch):
     model = fake_llm("ok")
-    doc = SimpleNamespace(title="Código Disciplinar Cesuca")
     chunks = [
-        SimpleNamespace(id=11, distance=0.12, heading="Avaliação", content="A média é 7.", document=doc),
-        SimpleNamespace(id=12, distance=0.2, heading="", content="Faltas: 25%.", document=doc),
+        RetrievedChunk(11, 1, "Avaliação", "A média é 7.", 0.5, 0.12, 0, document_title="Código Disciplinar Cesuca"),
+        RetrievedChunk(12, 1, "", "Faltas: 25%.", 0.4, 0.2, 1, document_title="Código Disciplinar Cesuca"),
     ]
-    monkeypatch.setattr(services, "retrieve_context", lambda *a, **k: chunks)
+    monkeypatch.setattr(retrieval, "search", lambda *a, **k: chunks)
 
     _run(conversation, "Como é a avaliação?")
 
@@ -206,15 +215,16 @@ def _sse(response) -> list[tuple[str | None, dict]]:
 def test_endpoint_envia_sse_tipado(api, conversation, fake_llm):
     fake_llm("Olá", " mundo")
 
-    response = api.post(f"/api/conversations/{conversation.id}/messages/send/", {"content": "Oi"}, format="json")
+    response = api.post(f"/api/conversations/{conversation.id}/messages/send/", {"content": "Como funciona a avaliação?"}, format="json")
 
     assert response.status_code == 200 and response["Content-Type"].startswith("text/event-stream")
     events = _sse(response)
     names = [name for name, _ in events]
-    assert names == ["meta", "status", "status", None, None, "done"]
-    assert events[0][1] == {"user_message_id": conversation.messages.get(role="user").id, "route": None}
-    assert events[1][1] == {"step": "searching", "label": "Buscando nos materiais do curso"}
-    assert events[3][1] == {"content": "Olá"}
+    assert names == ["status", "meta", "status", "status", None, None, "done"]
+    assert events[0][1] == {"step": "routing", "label": "Entendendo sua pergunta"}
+    assert events[1][1] == {"user_message_id": conversation.messages.get(role="user").id, "route": "direta"}
+    assert events[2][1] == {"step": "searching", "label": "Buscando nos materiais do curso"}
+    assert events[4][1] == {"content": "Olá"}
     assert events[-1][1] == {"message_id": conversation.messages.get(role="assistant").id}
 
 

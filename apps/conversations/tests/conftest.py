@@ -4,7 +4,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import Course, User
 from apps.ai_providers import services as ai_providers
-from apps.conversations import services
+from apps.conversations import retrieval, services
 from apps.conversations.models import Conversation
 
 from .fakes import ScriptedChatModel
@@ -62,4 +62,5 @@ def fake_llm(monkeypatch):
         return model
 
     monkeypatch.setattr(services, "retrieve_context", lambda *a, **k: [])
+    monkeypatch.setattr(retrieval, "search", lambda *a, **k: [])
     return configure

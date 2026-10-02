@@ -10,7 +10,7 @@
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank
@@ -20,6 +20,8 @@ from pgvector.django import CosineDistance
 from apps.ai_providers import services as ai_providers
 from apps.documents.models import DocumentChunk
 from apps.documents.views import get_documents_queryset
+
+from .guard import _normalize as _normalize_title
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,8 @@ class RetrievedChunk:
     score: float  # RRF (ou 0.0 em `neighbors`); maior = melhor
     distance: float | None  # cosseno; None quando não calculada
     order: int | None  # `DocumentChunk.index` (posição dentro do documento)
+    # Só para limpar o heading (ver `_clean_heading`); nunca é exibido nem vai ao LLM.
+    document_title: str = field(default="", repr=False, compare=False)
 
     @property
     def id(self) -> int:
@@ -73,19 +77,50 @@ def _scoped_queryset(user, course_code: str | None):
     return queryset
 
 
-_FIELDS = ("id", "document_id", "heading", "content", "index")
+_FIELDS = ("id", "document_id", "heading", "content", "index", "document__title")
+HEADING_SEPARATOR = " > "
+
+
+def _is_specific(normalized: str) -> bool:
+    """Texto normalizado específico o bastante (2+ palavras e 8+ caracteres) para que
+    uma coincidência parcial com o título do documento valha como vazamento dele."""
+    return len(normalized) >= 8 and len(normalized.split()) >= 2
+
+
+def _clean_heading(heading: str, document_title: str) -> str:
+    """Tira do breadcrumb ("A > B > C") os segmentos que repetem o título do documento
+    (o primeiro heading de um PDF costuma ser o próprio título/nome do arquivo). Assim
+    o rótulo `[T1 · seção: ...]` nunca entrega o título ao LLM. Descarta o segmento se
+    for igual ao título, se o título (específico) estiver contido nele ou se ele (com
+    2+ palavras) estiver contido no título. Sobrando nada, o heading fica vazio."""
+    title = _normalize_title(document_title or "")
+    segments = [part.strip() for part in (heading or "").split(HEADING_SEPARATOR.strip()) if part.strip()]
+    if not title or not segments:
+        return " > ".join(segments)
+
+    def repeats_title(segment: str) -> bool:
+        norm = _normalize_title(segment)
+        if not norm:
+            return False
+        if norm == title:
+            return True
+        return (_is_specific(title) and title in norm) or (_is_specific(norm) and norm in title)
+
+    return HEADING_SEPARATOR.join(segment for segment in segments if not repeats_title(segment))
 
 
 def _to_chunk(row: dict, *, score: float = 0.0) -> RetrievedChunk:
     distance = row.get("distance")
+    document_title = row.get("document__title") or ""
     return RetrievedChunk(
         chunk_id=row["id"],
         document_id=row["document_id"],
-        heading=row["heading"] or "",
+        heading=_clean_heading(row["heading"] or "", document_title),
         content=row["content"],
         score=score,
         distance=None if distance is None else float(distance),
         order=row["index"],
+        document_title=document_title,
     )
 
 

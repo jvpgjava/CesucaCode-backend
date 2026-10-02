@@ -49,6 +49,14 @@ def main() -> None:
     django.setup()
     call_command("migrate", interactive=False, verbosity=1)
 
+    # Opcional: SEED_MATERIALS=1 carrega a base mínima de materiais do RAG. Precisa
+    # de um CSAdmin e do provider de embedding configurado; se faltar algo, só avisa.
+    if os.environ.get("SEED_MATERIALS", "").lower() in ("1", "true", "yes"):
+        try:
+            call_command("seed_materials")
+        except Exception as exc:
+            print(f"seed_materials não concluído: {exc}", file=sys.stderr)
+
     os.execvp(sys.argv[1], sys.argv[1:])
 
 

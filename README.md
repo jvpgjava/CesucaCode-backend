@@ -92,7 +92,30 @@ por e-mail, não por "username". É o único jeito de criar um CSAdmin — não
 existe endpoint de API para isso de propósito (evita escalonamento de
 privilégio via API).
 
-### 7. Subir o servidor
+### 7. (Opcional) Carregar a base mínima de materiais
+
+Para o chat já ter o que consultar numa instalação nova, carregue os materiais
+de exemplo de `apps/documents/seed_materials/` (avaliação, manual das
+disciplinas online, horário e planos de ensino de CC):
+
+```bash
+python manage.py seed_materials
+```
+
+Precisa do CSAdmin do passo 6 e do provider de embedding configurado no `.env`
+(gera embeddings de verdade). É idempotente: pula o que já existe e reprocessa
+o que tinha falhado. No plano gratuito do Gemini (100 embeddings/min) defina
+`EMBEDDING_MAX_REQUESTS_PER_MINUTE=90` no `.env`: a ingestão passa a se espaçar
+sozinha e o Plano de Ensino (~700 chunks) leva uns 8 minutos. Sem essa variável
+(padrão, para produção) não há espera, e erro de cota do provider falha rápido. No Docker, `SEED_MATERIALS=1` no ambiente roda isso no startup (só faz
+efeito se já existir um CSAdmin). A lista fica em `seed_materials/manifest.json`;
+para incluir outro material, copie o arquivo para a pasta e adicione uma linha.
+Cada `.md` tem seu PDF original em `seed_materials/originals/` (referência, não
+ingerido; veja o `README.md` da pasta). Prefira `.md`/`.txt` a PDFs: processa em
+segundos. PDF escaneado falha porque o OCR está desligado, então vira `.md`
+antes (foi o caso do Código Disciplinar).
+
+### 8. Subir o servidor
 
 ```bash
 python manage.py runserver
@@ -499,6 +522,37 @@ Preencha só a chave do provider que for usar de fato.
 > processados exige gerar uma nova migration e reprocessar todos os
 > materiais (`POST /api/documents/{id}/reprocess/`) — os embeddings antigos
 > não são compatíveis com uma dimensão diferente.
+
+### Alternativa local: EmbeddingGemma via Ollama
+
+Além do Gemini (padrão), o embedding pode rodar local com o
+[EmbeddingGemma](https://ollama.com/library/embeddinggemma) pelo Ollama: sem
+chave, sem cota e sem GPU (modelo pequeno, roda em CPU). Gera vetores de
+**768 dimensões**, a mesma do Gemini, então não exige migration.
+
+```bash
+ollama pull embeddinggemma
+```
+
+```env
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=embeddinggemma
+EMBEDDING_DIMENSIONS=768
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Ao trocar de modelo com materiais já processados:
+
+1. `python manage.py test_ai_provider` — confirma o provider e a dimensão (se o
+   modelo devolver outro tamanho, o erro agora diz isso claramente).
+2. `python manage.py reprocess_documents` — refaz chunks e embeddings de todos
+   os materiais. Vetores de modelos diferentes não são comparáveis, então
+   misturar dá buscas sem sentido.
+3. Reavalie `RAG_MAX_DISTANCE` (0.30 foi calibrado com o Gemini) e rode
+   `python manage.py test_guardrails`.
+
+O Gemini continua sendo o padrão e o que o time usa; o EmbeddingGemma é uma
+opção em avaliação (ainda não validada como padrão de produção).
 
 Pra testar se as chaves configuradas no `.env` estão funcionando, sem
 precisar subir o servidor nem fazer upload de nada:

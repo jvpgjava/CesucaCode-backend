@@ -19,6 +19,7 @@ class Command(BaseCommand):
         try:
             embeddings = services.get_embedding_model()
             vector = embeddings.embed_query("teste de conexão")
+            services.validate_embedding_dimensions(vector)
             self.stdout.write(self.style.SUCCESS(f"Embedding OK: dimensão {len(vector)}"))
         except Exception as exc:
             self.stdout.write(self.style.ERROR(f"Embedding falhou: {exc}"))

@@ -1,9 +1,13 @@
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
+from django.conf import settings
 from django.db import close_old_connections, transaction
 
 from apps.ai_providers import services as ai_providers
+from apps.ai_providers.exceptions import ProviderConfigurationError
 
 from . import chunking, extraction
 from .models import Document, DocumentChunk
@@ -81,6 +85,54 @@ def _embedding_input(chunk: chunking.Chunk) -> str:
     return chunk.content
 
 
+class _EmbeddingThrottle:
+    """Espaça as chamadas de embedding para respeitar um teto de textos por minuto.
+
+    Só atua se `EMBEDDING_MAX_REQUESTS_PER_MINUTE` > 0 (ex.: plano gratuito do
+    Gemini, 100/min). Com 0 (padrão, pensado para produção) não espera nada. O
+    estado é compartilhado entre as threads do pool, que processam documentos em
+    paralelo contra a mesma cota."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait(self, n_texts: int) -> None:
+        rpm = settings.EMBEDDING_MAX_REQUESTS_PER_MINUTE
+        if rpm <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            delay = max(0.0, self._next_allowed - now)
+            self._next_allowed = max(now, self._next_allowed) + n_texts * 60.0 / rpm
+        if delay:
+            logger.info("Embedding: aguardando %.0fs para respeitar o limite configurado.", delay)
+            time.sleep(delay)
+
+
+_embedding_throttle = _EmbeddingThrottle()
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "429" in text or "resource_exhausted" in text or "quota" in text
+
+
+def _embed_documents(texts: list[str]) -> list[list[float]]:
+    """Embeda em lotes (`EMBEDDING_BATCH_SIZE`), espaçados se houver teto configurado.
+    Erros do provider, inclusive de cota, sobem normalmente."""
+    model = ai_providers.get_embedding_model()
+    size = settings.EMBEDDING_BATCH_SIZE
+    embeddings: list[list[float]] = []
+    for start in range(0, len(texts), size):
+        batch = texts[start : start + size]
+        _embedding_throttle.wait(len(batch))
+        embeddings.extend(model.embed_documents(batch))
+    if embeddings:
+        ai_providers.validate_embedding_dimensions(embeddings[0])
+    return embeddings
+
+
 def _process_document(document: Document) -> None:
     try:
         document.file.open("rb")
@@ -89,9 +141,7 @@ def _process_document(document: Document) -> None:
         finally:
             document.file.close()
 
-        embeddings = ai_providers.get_embedding_model().embed_documents(
-            [_embedding_input(chunk) for chunk in chunks]
-        )
+        embeddings = _embed_documents([_embedding_input(chunk) for chunk in chunks])
 
         with transaction.atomic():
             DocumentChunk.objects.bulk_create(
@@ -110,8 +160,14 @@ def _process_document(document: Document) -> None:
             document.processing_error = ""
             document.save(update_fields=["status", "processing_error", "updated_at"])
     except Exception as exc:
-        if isinstance(exc, extraction.UnsupportedFileTypeError):
+        if isinstance(exc, (extraction.UnsupportedFileTypeError, ProviderConfigurationError)):
             document.processing_error = str(exc)
+        elif _is_quota_error(exc):
+            logger.error("Cota do provider de embedding esgotada no documento %s: %s", document.id, exc)
+            document.processing_error = (
+                "A cota do provider de embedding foi esgotada. Aguarde a renovação "
+                "da cota (ou use outro plano/provider) e clique em Reprocessar."
+            )
         else:
             logger.exception("Falha ao processar o documento %s", document.id)
             document.processing_error = (

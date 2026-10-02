@@ -94,6 +94,7 @@ def get_accessible_chunks_queryset(user):
 def retrieve_context(user, query_text, top_k=TOP_K_CHUNKS, max_distance=None):
     max_distance = settings.RAG_MAX_DISTANCE if max_distance is None else max_distance
     query_vector = ai_providers.get_embedding_model().embed_query(query_text)
+    ai_providers.validate_embedding_dimensions(query_vector)
     return list(
         get_accessible_chunks_queryset(user)
         .annotate(distance=CosineDistance("embedding", query_vector))

@@ -133,6 +133,12 @@ LLM_MODEL = env("LLM_MODEL", default="gemini-2.5-flash")
 EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="gemini")
 EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="gemini-embedding-001")
 EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=768)
+# Textos por chamada de embedding na ingestão de materiais.
+EMBEDDING_BATCH_SIZE = env.int("EMBEDDING_BATCH_SIZE", default=100)
+# Teto de textos embeddados por minuto (0 = sem limite, o padrão para produção).
+# Use ~90 no plano gratuito do Gemini (100/min); sem isso, materiais grandes
+# estouram a cota e falham.
+EMBEDDING_MAX_REQUESTS_PER_MINUTE = env.int("EMBEDDING_MAX_REQUESTS_PER_MINUTE", default=0)
 
 GOOGLE_API_KEY = env("GOOGLE_API_KEY", default="")
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")

@@ -148,8 +148,8 @@ def test_web_so_existe_com_allow_web(make):
     sem, _, _ = make(allow_web=False)
     com, _, _ = make(allow_web=True)
 
-    assert set(sem) == {"buscar_materiais", "ler_contexto"}
-    assert set(com) == {"buscar_materiais", "ler_contexto", "pesquisar_web"}
+    assert set(sem) == {"buscar_materiais", "ler_contexto", "consultar_grade"}
+    assert set(com) == {"buscar_materiais", "ler_contexto", "consultar_grade", "pesquisar_web"}
 
 
 def test_pesquisar_web_formata_como_referencia_externa(make, monkeypatch):

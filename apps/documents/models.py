@@ -75,3 +75,38 @@ class DocumentChunk(TimeStampedModel):
 
     def __str__(self):
         return f"{self.document.title} #{self.index}"
+
+
+class Disciplina(TimeStampedModel):
+    """Disciplina extraída dos cabeçalhos de plano de ensino durante a ingestão.
+
+    Alimenta a grade estruturada (tool `consultar_grade` e o bloco "Disciplinas
+    cadastradas" da rota direta), que responde "quais disciplinas existem" sem depender
+    de o retrieval trazer todos os planos. Uma linha por (curso, nome); havendo vários
+    planos da mesma disciplina, vale o do período letivo mais recente. É apagada e
+    refeita a cada (re)processamento do documento."""
+
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="disciplinas")
+    course = models.ForeignKey(
+        "accounts.Course",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="disciplinas",
+        help_text="Curso do plano (resolvido pelos cursos do documento); vazio se ambíguo.",
+    )
+    nome = models.CharField(max_length=255)
+    semestre = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Semestre curricular no curso.")
+    carga_horaria = models.PositiveSmallIntegerField(null=True, blank=True, help_text="C/H semestral, em horas.")
+    periodo_letivo = models.CharField(max_length=10, blank=True, help_text="Período do plano, ex.: 2025/1.")
+    index_inicio = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Índice do primeiro chunk do plano dentro do documento."
+    )
+
+    class Meta:
+        ordering = ["semestre", "nome"]
+        verbose_name = "disciplina"
+        verbose_name_plural = "disciplinas"
+
+    def __str__(self):
+        return f"{self.nome} ({self.semestre or '?'}º sem.)"

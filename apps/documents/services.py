@@ -7,14 +7,15 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchVector
+from django.db.models import Value
 from django.db import close_old_connections, transaction
 from django.utils import timezone
 
 from apps.ai_providers import services as ai_providers
 from apps.ai_providers.exceptions import ProviderConfigurationError
 
-from . import chunking, extraction
-from .models import Document, DocumentChunk
+from . import chunking, disciplinas, extraction
+from .models import Disciplina, Document, DocumentChunk
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ def create_document(*, title, courses, file, uploaded_by) -> Document:
 
 def reprocess_document(document: Document) -> Document:
     document.chunks.all().delete()
+    document.disciplinas.all().delete()
     document.status = Document.Status.PROCESSING
     document.processing_error = ""
     document.save(update_fields=["status", "processing_error", "updated_at"])
@@ -121,15 +123,22 @@ def _course_label(document: Document) -> str:
     return ", ".join(course.name for course in document.courses.all())
 
 
-def _embedding_input(chunk: chunking.Chunk, course_label: str = "") -> str:
+def _embedding_input(chunk: chunking.Chunk, course_label: str = "", document_title: str = "") -> str:
     """Texto que vai ao modelo de embedding (o `content` salvo NÃO inclui o cabeçalho).
 
-    Cabeçalho contextual determinístico — curso(s) e seção —, para o chunk "saber"
-    de onde veio. Nunca leva o título do arquivo (o título não pode vazar nem
-    influenciar a busca). Depois, aplica o prefixo de tarefa do modelo, se houver."""
+    Cabeçalho contextual determinístico para o chunk "saber" de onde veio: título do
+    documento, curso(s), disciplina vigente (com semestre e C/H) e seção. O título do
+    documento entra AQUI (e no search_vector) para a busca achar o material pelo tipo/
+    nome ("horário", "plano de ensino"), mas nunca é salvo no `content`/`heading`: o LLM
+    só vê esses dois (via `format_context`), então o título continua sem chegar a ele.
+    Depois, aplica o prefixo de tarefa do modelo, se houver."""
     parts = []
+    if document_title:
+        parts.append(f"Documento: {document_title}")
     if course_label:
         parts.append(f"Documento do curso: {course_label}")
+    if chunk.discipline is not None:
+        parts.append(f"Disciplina: {chunk.discipline.label}")
     if chunk.heading:
         parts.append(f"Seção: {chunk.heading}")
     text = f"{' | '.join(parts)}\n\n{chunk.content}" if parts else chunk.content
@@ -219,12 +228,22 @@ def _embed_documents(texts: list[str]) -> list[list[float]]:
 
 
 def update_search_vectors(document: Document) -> None:
-    """Preenche o tsvector (busca textual) dos chunks do documento: seção com peso A e
-    conteúdo com peso B, na config 'portuguese'."""
+    """Preenche o tsvector (busca textual) dos chunks do documento: seção (que já leva o
+    nome da disciplina) e título do documento com peso A, conteúdo com peso B, na config
+    'portuguese'. O título só existe aqui, no índice: nunca no texto mostrado ao LLM."""
     document.chunks.update(
-        search_vector=SearchVector("heading", weight="A", config="portuguese")
+        search_vector=SearchVector("heading", Value(document.title), weight="A", config="portuguese")
         + SearchVector("content", weight="B", config="portuguese")
     )
+
+
+def sync_disciplinas(document: Document, chunks: list[chunking.Chunk]) -> int:
+    """Refaz a tabela `Disciplina` do documento a partir dos planos detectados nos
+    chunks (ver `disciplinas.build_disciplinas`). Devolve quantas linhas gravou."""
+    document.disciplinas.all().delete()
+    rows = disciplinas.build_disciplinas(chunks, list(document.courses.all()))
+    Disciplina.objects.bulk_create([Disciplina(document=document, **row) for row in rows])
+    return len(rows)
 
 
 def _process_document(document: Document) -> None:
@@ -236,7 +255,7 @@ def _process_document(document: Document) -> None:
             document.file.close()
 
         course_label = _course_label(document)
-        embeddings = _embed_documents([_embedding_input(chunk, course_label) for chunk in chunks])
+        embeddings = _embed_documents([_embedding_input(chunk, course_label, document.title) for chunk in chunks])
 
         with transaction.atomic():
             DocumentChunk.objects.bulk_create(
@@ -252,6 +271,7 @@ def _process_document(document: Document) -> None:
                 ]
             )
             update_search_vectors(document)
+            sync_disciplinas(document, chunks)
             document.status = Document.Status.READY
             document.processing_error = ""
             document.save(update_fields=["status", "processing_error", "updated_at"])

@@ -20,6 +20,8 @@ from django.conf import settings
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from apps.documents import grade
+
 from . import web_search
 
 SEARCH_TOP_K = 6
@@ -29,6 +31,10 @@ MAX_NEIGHBOR_WINDOW = 2
 MAX_QUERY_CHARS = 300
 _REF_PATTERN = re.compile(r"^T\d+$")
 
+GRADE_EMPTY_MESSAGE = (
+    "Nenhuma disciplina cadastrada para esse filtro. Use buscar_materiais para procurar nos materiais "
+    "e, se não houver nada, diga que não tem essa informação confirmada."
+)
 NO_RESULTS_MESSAGE = "Nenhum trecho relevante encontrado. Tente reformular a consulta com outros termos."
 
 
@@ -49,6 +55,19 @@ class LerContextoArgs(BaseModel):
     vizinhos: int = Field(
         default=1,
         description="Quantos trechos antes e depois ler (0 a 2).",
+    )
+
+
+class ConsultarGradeArgs(BaseModel):
+    curso: Literal["cc", "ads"] | None = Field(
+        default=None,
+        description="Curso da grade. Omita para usar o curso da conversa (ou todos os que o usuário pode ver).",
+    )
+    semestre: int | None = Field(
+        default=None,
+        ge=1,
+        le=12,
+        description="Semestre curricular (1 a 12) para listar só aquele semestre. Omita para a grade inteira.",
     )
 
 
@@ -111,6 +130,13 @@ def _format_web_results(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def grade_listing(user, curso: str | None = None, semestre: int | None = None) -> str:
+    """Lista de disciplinas cadastradas (nome, semestre, C/H) que `user` pode ver, com o
+    aviso de fonte; "" se não houver. Usada pela tool `consultar_grade` e pelo bloco
+    "Disciplinas cadastradas" da rota direta."""
+    return grade.grade_text(user, curso, semestre)
+
+
 def recorder_step(recorder, type: str, name: str, **meta):
     """`recorder.step(...)` ou um contexto vazio quando não há recorder (o dict
     devolvido aceita metadados do mesmo jeito, só que é descartado)."""
@@ -165,6 +191,13 @@ def build_tools(*, user, course_code: str | None, registry, recorder=None, allow
                 used += len(part) + 2
             return "\n\n".join(parts)
 
+    def consultar_grade(curso: str | None = None, semestre: int | None = None) -> str:
+        scope = curso or (course_code if course_code in ("cc", "ads") else None)
+        with _step("consultar_grade") as meta:
+            text = grade_listing(user, scope, semestre)
+            meta["n_results"] = sum(1 for line in text.splitlines() if line.startswith("- "))
+            return text or GRADE_EMPTY_MESSAGE
+
     def pesquisar_web(consulta: str) -> str:
         with _step("pesquisar_web") as meta:
             query = web_search.build_query(user, consulta)
@@ -193,6 +226,17 @@ def build_tools(*, user, course_code: str | None, registry, recorder=None, allow
                 "ou faltar o começo/fim da explicação. Recebe a referência (ex.: T2)."
             ),
             args_schema=LerContextoArgs,
+        ),
+        StructuredTool.from_function(
+            func=consultar_grade,
+            name="consultar_grade",
+            description=(
+                "Lista as disciplinas cadastradas do curso (nome, semestre e carga horária), vindas dos "
+                "planos de ensino. Use em perguntas sobre quais disciplinas existem, o que se cursa em "
+                "cada semestre ou a carga horária; depois, busque nos materiais o detalhe de uma "
+                "disciplina (ementa, avaliação). O semestre pode variar conforme o período letivo."
+            ),
+            args_schema=ConsultarGradeArgs,
         ),
     ]
     if allow_web:

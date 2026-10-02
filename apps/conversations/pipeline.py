@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from apps.ai_providers import services as ai_providers
 from apps.documents.views import get_documents_queryset
 
-from . import agent, guard, prompts, retrieval, routing, services, web_search
+from . import agent, guard, prompts, retrieval, routing, services, tools, web_search
 from .agent import AgentUnavailable
 from .events import DoneEvent, ErrorEvent, MetaEvent, SuggestionsEvent, TokenEvent, status
 from .models import Conversation, Message
@@ -67,6 +67,17 @@ INSUFFICIENT_NOTE = (
     "diga que não tem essa informação confirmada e sugira falar com o professor ou a coordenação — sem "
     "mencionar materiais, arquivos ou base de dados e sem completar com suposições.]"
 )
+
+# Conteúdo técnico: a abstenção vale para fatos institucionais, não para conceitos de
+# computação. Só entra fora do modo estrito (`CHAT_ALLOW_GENERAL_KNOWLEDGE`).
+TECHNICAL_NOTE = (
+    "[Conteúdo técnico de computação: use os trechos acima quando ajudarem; no que eles não cobrirem, "
+    "EXPLIQUE com conhecimento geral consolidado, avisando em uma frase que é uma explicação geral "
+    "(não específica da disciplina) e sugerindo confirmar com o professor. Não responda que não tem "
+    "informação sobre um conceito técnico: só as informações da instituição (datas, notas, regras, "
+    "disciplinas, horários) exigem confirmação explícita.]"
+)
+GRADE_BLOCK_HEADER = "Disciplinas cadastradas:"
 
 SUFFICIENCY_PROMPT = """\
 Você confere se o contexto fornecido sustenta a resposta de uma pergunta de aluno sobre os cursos de \
@@ -246,6 +257,12 @@ class _Turn:
         yield status("searching")
         pairs = self._retrieve(decision)
         context_block = retrieval.format_context(pairs)
+        if decision.intent == "grade_disciplinas" and not pedagogic:
+            grade_block = self._grade_block(decision)
+            if grade_block:
+                # A lista estruturada vem primeiro: responde "quais disciplinas existem"
+                # sem depender de o retrieval trazer todos os planos.
+                context_block = f"{GRADE_BLOCK_HEADER}\n{grade_block}" + (f"\n\n---\n\n{context_block}" if context_block else "")
 
         web_block = ""
         # Referências externas só em grade/disciplinas e fora do modo estrito. A consulta
@@ -264,13 +281,16 @@ class _Turn:
         notes: tuple[str, ...] = ()
         if (
             not pedagogic
-            and pairs
+            and context_block
             and decision.intent in SUFFICIENCY_INTENTS
             and getattr(settings, "CHAT_SUFFICIENCY_CHECK_ENABLED", True)
         ):
             yield status("checking")
             if not self._is_sufficient(decision, context_block):
                 notes = (INSUFFICIENT_NOTE,)
+
+        if not pedagogic and decision.intent == "conteudo_tecnico" and settings.CHAT_ALLOW_GENERAL_KNOWLEDGE:
+            notes = (*notes, TECHNICAL_NOTE)
 
         yield status("writing")
         question = services.compose_question(self.user_text, context_block, web_block, notes)
@@ -291,6 +311,7 @@ class _Turn:
                 registry=self.registry,
                 budget=agent.budget_from_settings(),
                 recorder=self.recorder,
+                intent=decision.intent,
             )
         except AgentUnavailable as exc:
             logger.info("Agente indisponível; usando a rota direta: %s", exc)
@@ -341,6 +362,19 @@ class _Turn:
             meta["n_chunks"] = len(chunks)
         self.registry = retrieval.RefRegistry()
         return self.registry.add(chunks)
+
+    def _grade_block(self, decision: routing.RouteDecision) -> str:
+        """Disciplinas cadastradas (tabela `Disciplina`) que o usuário pode ver; "" se não
+        houver dados ou se a consulta falhar (o retrieval segue sozinho)."""
+        with self.recorder.step("retrieval", "grade", course=self._course_code(decision)) as meta:
+            try:
+                block = tools.grade_listing(self.user, self._course_code(decision))
+            except Exception:
+                logger.warning("Consulta da grade estruturada falhou; seguindo só com o retrieval.", exc_info=True)
+                meta["ok"] = False
+                return ""
+            meta["n_items"] = sum(1 for line in block.splitlines() if line.startswith("- "))
+            return block
 
     def _is_sufficient(self, decision: routing.RouteDecision, context_block: str) -> bool:
         """Os trechos sustentam a resposta? Qualquer falha da checagem vale como "sim":

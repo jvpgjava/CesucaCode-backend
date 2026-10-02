@@ -45,6 +45,7 @@ Você agora atua como PESQUISADOR dos materiais didáticos do curso. Sua tarefa 
 Como trabalhar:
 - Use as ferramentas para buscar nos materiais ANTES de concluir qualquer coisa. Não responda de memória.
 - Em perguntas compostas (vários assuntos, comparações, grade + conteúdo), faça uma busca por assunto, com consultas curtas e autossuficientes. O típico são 1 a 4 buscas.
+- Para saber QUAIS disciplinas existem, o semestre ou a carga horária, use `consultar_grade` (lista estruturada vinda dos planos de ensino) e depois `buscar_materiais` para o detalhe de uma disciplina (ementa, avaliação, bibliografia).
 - Se um trecho vier cortado ou incompleto, use `ler_contexto` com a referência dele.
 - Use `pesquisar_web` (se disponível) só como apoio, depois de buscar nos materiais.
 - Pare de buscar quando já tiver evidência suficiente, ou quando novas buscas não trouxerem nada de novo. Quando terminar, responda apenas "ok".
@@ -53,10 +54,24 @@ Como trabalhar:
 """
 
 _BUDGET_NOTE = "A busca foi interrompida antes de terminar; responda com o que já tem."
-_FINAL_INSTRUCTION = (
-    "Responda à pergunta com base no contexto acima. Se faltar evidência no contexto, diga que "
-    "não tem essa informação confirmada, sem inventar. As referências [T#] são internas: nunca as cite."
+_FINAL_INSTRUCTION_BASE = "Responda à pergunta com base no contexto acima. As referências [T#] são internas: nunca as cite."
+# A abstenção vale para FATOS INSTITUCIONAIS (datas, notas, regras, disciplinas do curso,
+# horários, professores): dizer "não tenho isso confirmado" é melhor que inventar. Já
+# conceitos técnicos de computação podem ser explicados com conhecimento geral (com o aviso
+# do prompt base), senão o aluno recebe uma recusa onde bastava explicar.
+_INSTITUTIONAL_RULE = (
+    "Fatos da instituição ou do curso (datas, notas, regras, disciplinas, horários, professores, "
+    "coordenação) só valem se estiverem explícitos no contexto: se faltarem, diga que não tem essa "
+    "informação confirmada e sugira falar com o professor ou a coordenação, sem inventar."
 )
+_TECHNICAL_RULE = (
+    "Conceitos técnicos de computação você PODE e DEVE explicar: use o contexto quando ele ajudar e, "
+    "no que ele não cobrir, explique com conhecimento geral consolidado, avisando em uma frase que é "
+    "uma explicação geral (não específica da disciplina) e sugerindo confirmar com o professor. "
+    "Não se recuse a explicar por falta de trecho nos materiais."
+)
+# Intenções em que a resposta é só fato institucional (sem regra de conteúdo técnico).
+_INSTITUTIONAL_INTENTS = frozenset({"info_institucional", "grade_disciplinas"})
 _NO_CONTEXT = "[Nenhuma informação de referência foi considerada relevante para esta pergunta.]"
 _STRICT_NOTE = (
     "MODO ESTRITO: não use conhecimento geral. Diga que não tem essa informação confirmada e "
@@ -65,7 +80,12 @@ _STRICT_NOTE = (
 _LIMIT_MESSAGE = "Limite de buscas atingido: não foi possível executar esta chamada. Conclua com o que já tem."
 
 # ferramenta -> etapa de status (o rótulo vem sempre do dicionário)
-_TOOL_STATUS = {"buscar_materiais": "searching", "ler_contexto": "reading", "pesquisar_web": "web"}
+_TOOL_STATUS = {
+    "buscar_materiais": "searching",
+    "consultar_grade": "searching",
+    "ler_contexto": "reading",
+    "pesquisar_web": "web",
+}
 
 
 class AgentUnavailable(Exception):
@@ -137,7 +157,18 @@ def _registry_pairs(registry) -> list[tuple[str, object]]:
     return pairs
 
 
-def _final_messages(system, history, question, registry, web_blocks, *, interrupted: bool) -> list[BaseMessage]:
+def _final_instruction(intent: str | None, *, allow_general: bool) -> str:
+    """Instrução final por intenção. Modo estrito (`allow_general=False`): sempre só o
+    contexto, sem a regra de conteúdo técnico. Sem intenção conhecida (ou composta mista),
+    vale a regra institucional e a técnica, cada uma no seu domínio."""
+    if not allow_general or intent in _INSTITUTIONAL_INTENTS:
+        return f"{_FINAL_INSTRUCTION_BASE} {_INSTITUTIONAL_RULE}"
+    return f"{_FINAL_INSTRUCTION_BASE} {_INSTITUTIONAL_RULE} {_TECHNICAL_RULE}"
+
+
+def _final_messages(
+    system, history, question, registry, web_blocks, *, interrupted: bool, intent: str | None = None
+) -> list[BaseMessage]:
     from . import retrieval
 
     pairs = _registry_pairs(registry)
@@ -148,10 +179,11 @@ def _final_messages(system, history, question, registry, web_blocks, *, interrup
         sections.append(f"Contexto coletado:\n\n{_NO_CONTEXT}")
     sections.extend(web_blocks)
     sections.append(f"Pergunta: {question}")
-    instruction = _FINAL_INSTRUCTION
+    allow_general = bool(getattr(settings, "CHAT_ALLOW_GENERAL_KNOWLEDGE", True))
+    instruction = _final_instruction(intent, allow_general=allow_general)
     if interrupted:
         instruction = f"{instruction} {_BUDGET_NOTE}"
-    if not getattr(settings, "CHAT_ALLOW_GENERAL_KNOWLEDGE", True) and not pairs:
+    if not allow_general and not pairs:
         instruction = f"{instruction} {_STRICT_NOTE}"
     sections.append(instruction)
 
@@ -190,8 +222,11 @@ def run_agent(
     registry,
     budget: AgentBudget | None = None,
     recorder=None,
+    intent: str | None = None,
 ) -> Iterator[StatusEvent | TokenEvent]:
-    """Pesquisa com ferramentas e depois gera a resposta em streaming.
+    """Pesquisa com ferramentas e depois gera a resposta em streaming. `intent` (do
+    roteador) calibra a instrução final: abstenção em fato institucional, explicação
+    em conteúdo técnico.
 
     `messages`: SystemMessage(s) + histórico + HumanMessage com a pergunta (pura).
     Levanta `AgentUnavailable` já na chamada se o modelo não suporta tools."""
@@ -221,10 +256,11 @@ def run_agent(
         recorder=recorder,
         tools={tool.name: tool for tool in tools},
         agent_model=agent_model,
+        intent=intent,
     )
 
 
-def _run(*, messages, registry, budget, recorder, tools, agent_model) -> Iterator[StatusEvent | TokenEvent]:
+def _run(*, messages, registry, budget, recorder, tools, agent_model, intent=None) -> Iterator[StatusEvent | TokenEvent]:
     system, history, question = _split_messages(messages)
     agent_system = f"{system}\n\n{AGENT_PROMPT}" if system else AGENT_PROMPT
     loop_messages: list[BaseMessage] = [SystemMessage(content=agent_system), *history, HumanMessage(content=question)]
@@ -314,7 +350,7 @@ def _run(*, messages, registry, budget, recorder, tools, agent_model) -> Iterato
         recorder.set(chunk_ids=list(registry.chunk_ids))
 
     yield from gate.emit("writing")
-    final_messages = _final_messages(system, history, question, registry, web_blocks, interrupted=interrupted)
+    final_messages = _final_messages(system, history, question, registry, web_blocks, interrupted=interrupted, intent=intent)
     answer_model = ai_providers.get_chat_model("answer")
     with recorder_step(recorder, "llm", "answer_stream"):
         for chunk in answer_model.stream(final_messages):

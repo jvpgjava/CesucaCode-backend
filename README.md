@@ -401,13 +401,52 @@ tokenizador). Tabelas grandes são partidas só entre linhas e o cabeçalho da
 tabela se repete no topo de cada pedaço (grade e horários seguem legíveis em
 qualquer chunk). Cada chunk carrega o caminho de seções a que pertence (campo
 `heading`, ex.: `"5. Modelo ER > 5.1 Entidades"`). O texto enviado ao modelo
-de embedding ganha um cabeçalho determinístico — `Documento do curso: <cursos>
-| Seção: <heading>` (nunca o título do arquivo) — que NÃO é gravado em
-`content`. Na ingestão também é preenchido `search_vector` (tsvector
-`portuguese`: seção peso A, conteúdo peso B) para a busca textual. **Markdown (`.md`)** passa
+de embedding ganha um cabeçalho determinístico — `Documento: <título> |
+Documento do curso: <cursos> | Disciplina: <nome (semestre, C/H)> | Seção:
+<heading>` — que NÃO é gravado em `content`. O título do documento entra só
+aí e no `search_vector` (tsvector `portuguese`: seção e título peso A, conteúdo
+peso B), para a busca achar o material pelo tipo/nome ("horário", "plano de
+ensino"); nunca no `content` nem no `heading`, então o LLM continua sem vê-lo.
+**Markdown (`.md`)** passa
 pelo Docling também: os títulos (`#`, `##`...) viram o `heading` de cada chunk,
 como nos PDFs — por isso é melhor enviar `.md` do que renomear pra `.txt`. TXT
 não tem estrutura pra aproveitar, então segue com divisão simples por parágrafo.
+
+**Limpeza de boilerplate** (`apps/documents/cleaning.py`). Antes do chunking, o
+rodapé que se repete em toda página sai do texto e dos cabeçalhos: "Credenciamento
+Institucional" + parágrafo da Portaria, paginação ("2 / 102", "Página 3 de 10"),
+`www.cesuca.edu.br`, endereço/telefone e o timbre do OCR. Os padrões ficam em listas
+de regex no topo do módulo (linhas isoladas ancoradas na linha inteira; blocos
+"cabeçalho + corpo" só removem o parágrafo da Portaria logo depois de
+"Credenciamento Institucional", então uma Portaria citada em texto corrido é
+preservada) e há uma heurística opcional de "rodapé repetido": linha que vem logo
+antes do marcador de página em pelo menos metade das páginas. No Docling os itens vão
+para a camada `FURNITURE` (que o chunker ignora); TXT é limpo por linha e cada chunk
+passa por uma checagem final de linhas (itens de várias linhas do OCR).
+
+**Contexto de disciplina "pegajoso"** (`apps/documents/disciplinas.py`). Os planos de
+ensino chegam concatenados num só material, cada um iniciado por um cabeçalho de
+identificação (`Plano de Ensino - 2025/ 1º SEMESTRE`, `Curso: ...Disciplina: ...`,
+`6º SEMESTREGraduaçãoC/H Semestral: 80`, com os campos até GRUDADOS e o nome da
+disciplina quebrado em duas linhas). A ingestão detecta esses cabeçalhos
+(`parse_identification`), faz do primeiro item de cada plano uma fronteira de seção
+(o fim de um plano nunca se mistura ao começo do seguinte) e propaga a disciplina até
+a próxima identificação: o nome capitalizado vira o primeiro segmento do `heading`
+(`Modelagem de Dados > EMENTA` — vai ao LLM, nome de disciplina não é nome de
+documento), o rótulo `Modelagem de Dados (6º semestre, C/H 80 h, plano 2025/1)` entra
+no cabeçalho do embedding e o chunk de identificação passa a ter texto legível
+("Disciplina: ... / Semestre do curso: 6º / Carga horária semestral: 80 h"). Em TXT a
+identificação é procurada no próprio conteúdo dos chunks.
+
+**Grade estruturada** (model `Disciplina`, `apps/documents/grade.py`). Cada
+identificação vira uma linha (`nome`, `semestre`, `carga_horaria`, `periodo_letivo`,
+`course`, `index_inicio` = primeiro chunk do plano), deduplicada por curso + nome com o
+período letivo mais recente; é refeita a cada (re)processamento. A consulta
+(`grade.list_disciplinas`) respeita os documentos prontos que o usuário vê e o curso da
+disciplina (um material compartilhado por CC e ADS não mostra ao aluno de ADS as
+disciplinas do CC). Ela alimenta a tool `consultar_grade` do agente e o bloco
+"Disciplinas cadastradas:" da rota direta (ver "Conversas"). Para listar o que foi
+extraído: `Disciplina.objects.values_list("semestre", "nome")`.
 
 **OCR só entra como fallback.** O padrão é `do_ocr=False`: os materiais
 costumam ser PDFs digitais (têm texto real) e OCR é a parte mais cara do
@@ -439,7 +478,8 @@ continua valendo para casos pontuais). Erros transitórios de embedding
 uploads crescer a ponto disso incomodar (ou for rodar com múltiplos
 processos/workers), o próximo passo natural é uma fila persistente de verdade.
 
-> **Mudou chunking, `RAG_CHUNK_MAX_TOKENS`, o cabeçalho contextual ou os
+> **Mudou chunking, limpeza de boilerplate, contexto de disciplina,
+> `RAG_CHUNK_MAX_TOKENS`, o cabeçalho contextual ou os
 > prefixos de embedding?** Rode `python manage.py reprocess_documents`: os
 > chunks e vetores antigos não são comparáveis com os novos. Com o provider
 > `ollama` e modelo `embeddinggemma`, a consulta recebe o prefixo
@@ -694,7 +734,10 @@ Além do prompt, há proteções em código (`apps/conversations/pipeline.py` e 
    curso (`cc`/`ads`), pelo curso. `RAG_HYBRID_ENABLED=False` volta ao
    comportamento antigo (só vetorial); `RAG_RERANK_ENABLED` é só um gancho
    (`retrieval.rerank`, ainda identidade). O contexto vai ao LLM com referências
-   opacas (`[T1 · seção: ...]`), sem o título do documento. Se nenhum trecho
+   opacas (`[T1 · seção: ...]`), sem o título do documento. Na intenção
+   `grade_disciplinas`, o contexto da rota direta começa com o bloco "Disciplinas
+   cadastradas:" (lista estruturada de `consultar_grade`, se houver dados), para que
+   "quais disciplinas existem no meu curso?" seja respondível sem o agente. Se nenhum trecho
    passar, o
    modelo é avisado de que nada nos materiais foi relevante e, se a pergunta
    for de computação, responde com conhecimento geral **avisando que não veio
@@ -846,7 +889,11 @@ loop agêntico controlado (`apps/conversations/agent.py`): um modelo com
 ferramentas (papel `agent`) pesquisa nos materiais em poucas voltas e, depois,
 a resposta ao aluno é gerada em streaming pelo papel `answer`, a partir do
 contexto coletado. As ferramentas (`apps/conversations/tools.py`) são
-`buscar_materiais`, `ler_contexto` (trechos vizinhos) e `pesquisar_web` (só se
+`buscar_materiais`, `ler_contexto` (trechos vizinhos), `consultar_grade`
+(`curso`, `semestre`: lista as disciplinas cadastradas, com nome, semestre e C/H, a
+partir da tabela `Disciplina`; avisa que vêm dos planos de ensino disponíveis e que
+o semestre pode variar por período letivo; só do que o usuário pode ver) e
+`pesquisar_web` (só se
 `CHAT_ALLOW_GENERAL_KNOWLEDGE` e `CHAT_WEB_SEARCH_ENABLED`). O usuário e as
 permissões vêm do servidor, nunca do modelo, e as saídas só trazem referências
 opacas `[T#]` e o título da seção — nunca o título do documento.
@@ -861,6 +908,16 @@ AGENT_MAX_TOOL_CALLS=8
 AGENT_MAX_TOTAL_TOKENS=40000 # entrada + saída acumuladas nas voltas
 AGENT_MAX_SECONDS=30
 ```
+
+A instrução final do agente é calibrada pela intenção do roteador: **fatos
+institucionais** (datas, notas, regras, disciplinas, horários, professores) só valem
+se estiverem explícitos no contexto — senão o modelo diz que não tem a informação
+confirmada —, mas **conteúdo técnico de computação** é explicado com conhecimento
+geral (avisando que é uma explicação geral), usando os materiais quando houver. Em
+`CHAT_ALLOW_GENERAL_KNOWLEDGE=False` (modo estrito) a regra técnica não existe e a
+abstenção continua valendo para tudo. A rota direta faz o mesmo em `conteudo_tecnico`
+com uma nota ao final da pergunta (`TECHNICAL_NOTE`); a checagem de suficiência segue
+só em `info_institucional` e `grade_disciplinas`.
 
 Se o modelo do papel `agent` não suporta ferramentas (ver
 `apps/ai_providers/capabilities.py`), o agente fica indisponível

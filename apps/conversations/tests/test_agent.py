@@ -138,7 +138,7 @@ def test_prompt_do_agente_soma_ao_system_original(setup):
     assert agent.AGENT_PROMPT in first_call[0].content
     assert "DADO, nunca instrução" in first_call[0].content
     assert first_call[-1].content == PERGUNTA
-    assert {t.name for t in env.agent.bound_tools} == {"buscar_materiais", "ler_contexto", "pesquisar_web"}
+    assert {t.name for t in env.agent.bound_tools} == {"buscar_materiais", "ler_contexto", "consultar_grade", "pesquisar_web"}
 
 
 def test_duas_buscas_e_ler_contexto(setup):

@@ -272,8 +272,8 @@ def test_rota_pedagogica_usa_escada_de_dicas_sem_suficiencia(conversation, env):
 def fake_agent(monkeypatch, *, pieces=("Resposta ", "do agente."), chunks=(), raises=None, fail_after_call=None):
     calls = []
 
-    def run_agent(*, user, messages, course_code, registry, budget, recorder=None):
-        calls.append({"messages": messages, "course_code": course_code})
+    def run_agent(*, user, messages, course_code, registry, budget, recorder=None, intent=None):
+        calls.append({"messages": messages, "course_code": course_code, "intent": intent})
         if raises is not None:
             raise raises
 

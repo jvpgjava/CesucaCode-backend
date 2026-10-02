@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from apps.accounts.models import Course, User
 from apps.ai_providers import services as ai_providers
-from apps.documents import chunking, extraction, services
+from apps.documents import chunking, disciplinas, extraction, services
 from apps.documents.models import Document
 
 DIMS = settings.EMBEDDING_DIMENSIONS
@@ -103,7 +103,7 @@ def test_cota_esgotada_marca_falha_com_mensagem(admin, monkeypatch, sleeps):
 # --- ingestão ponta a ponta (TXT) --------------------------------------------------
 
 
-def test_ingestao_grava_chunks_search_vector_e_cabecalho_sem_titulo(admin, monkeypatch, sleeps):
+def test_ingestao_grava_chunks_search_vector_e_cabecalho_com_titulo(admin, monkeypatch, sleeps):
     model = FakeEmbeddings()
     monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
     document = make_document(admin)
@@ -118,15 +118,31 @@ def test_ingestao_grava_chunks_search_vector_e_cabecalho_sem_titulo(admin, monke
     assert document.chunks.filter(
         search_vector=SearchQuery("paragrafo", config="portuguese")
     ).exists()
+    # O título do documento entra no embedding e no índice textual, nunca no conteúdo salvo.
+    assert document.chunks.filter(search_vector=SearchQuery("secreto", config="portuguese")).exists()
+    assert "Material secreto" not in chunk.content and "Material secreto" not in chunk.heading
     (text,) = model.calls[0]
-    assert text.startswith("Documento do curso: ")
-    assert "Ciência da Computação" in text and "Material secreto" not in text and "material.txt" not in text
+    assert text.startswith("Documento: Material secreto | Documento do curso: ")
+    assert "Ciência da Computação" in text and "material.txt" not in text
 
 
 def test_embedding_input_cabecalho_contextual():
     chunk = chunking.Chunk(content="corpo", heading="5. Modelo ER > 5.1 Entidades")
     assert services._embedding_input(chunk, "CC") == "Documento do curso: CC | Seção: 5. Modelo ER > 5.1 Entidades\n\ncorpo"
     assert services._embedding_input(chunking.Chunk(content="corpo"), "") == "corpo"
+    com_titulo = services._embedding_input(chunk, "CC", "Horário CC 2026/2 (Noturno)")
+    assert com_titulo == (
+        "Documento: Horário CC 2026/2 (Noturno) | Documento do curso: CC | "
+        "Seção: 5. Modelo ER > 5.1 Entidades\n\ncorpo"
+    )
+
+
+def test_embedding_input_leva_a_disciplina_vigente():
+    ctx = disciplinas.DisciplineContext(nome="Modelagem de Dados", semestre=6, carga_horaria=80, periodo_letivo="2025/1")
+    chunk = chunking.Chunk(content="corpo", heading="Modelagem de Dados > EMENTA", discipline=ctx)
+    text = services._embedding_input(chunk, "CC", "Planos de Ensino")
+    assert "Disciplina: Modelagem de Dados (6º semestre, C/H 80 h, plano 2025/1)" in text
+    assert "Seção: Modelagem de Dados > EMENTA" in text
 
 
 def test_prefixos_de_tarefa_so_para_embeddinggemma_no_ollama(settings):

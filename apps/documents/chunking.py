@@ -26,6 +26,8 @@ from docling_core.transforms.serializer.markdown import MarkdownParams, Markdown
 from docling_core.types.doc.base import ImageRefMode
 from docling_core.types.doc.document import DoclingDocument
 
+from . import cleaning, disciplinas
+
 DEFAULT_MAX_CHARS = 1500
 DEFAULT_OVERLAP = 200
 
@@ -36,6 +38,9 @@ _TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 class Chunk:
     content: str
     heading: str = ""
+    # Plano/disciplina vigente (contexto "pegajoso", ver disciplinas.py): o nome já está
+    # no `heading`; o rótulo completo (semestre, C/H) entra só no texto do embedding.
+    discipline: "disciplinas.DisciplineContext | None" = None
 
 
 class ApproxTokenizer(BaseTokenizer):
@@ -79,7 +84,7 @@ def chunk_text(
 ) -> list[Chunk]:
     """Divisão simples por parágrafo — usada só para TXT, que não tem estrutura
     (cabeçalhos, seções) para o Docling entender."""
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    paragraphs = [p.strip() for p in cleaning.clean_text(text).split("\n\n") if p.strip()]
     chunks: list[str] = []
     current = ""
 
@@ -101,7 +106,9 @@ def chunk_text(
     if current:
         chunks.append(current)
 
-    return [Chunk(content=c) for c in chunks]
+    result = [Chunk(content=c) for c in chunks]
+    disciplinas.contexts_for_text_chunks(result)
+    return result
 
 
 def chunk_docling_document(
@@ -119,13 +126,25 @@ def chunk_docling_document(
         serializer_provider=_MarkdownTableSerializerProvider(),
     )
 
+    # Antes do chunker: rodapé/paginação saem do texto e os cabeçalhos de plano de ensino
+    # viram fronteira de seção, com o contexto da disciplina por item.
+    cleaning.mark_boilerplate_items(document)
+    contexts = disciplinas.prepare_document(document)
+
     chunks: list[Chunk] = []
     for doc_chunk in chunker.chunk(document):
-        text = doc_chunk.text.strip()
+        # Rede de segurança: itens com várias linhas (OCR) escapam da checagem por item.
+        text = cleaning.clean_text(doc_chunk.text, repeated_footer=False).strip()
         if not text:
             continue
-        heading = " > ".join(doc_chunk.meta.headings) if doc_chunk.meta.headings else ""
-        chunks.append(Chunk(content=text, heading=heading))
+        items = list(doc_chunk.meta.doc_items or [])
+        ctx = contexts.get(items[0].self_ref) if items else None
+        headings = [h for h in (doc_chunk.meta.headings or []) if not cleaning.is_boilerplate_heading(h)]
+        if ctx is not None:
+            headings = [ctx.nome, *[h for h in headings if h != ctx.header_text and h != ctx.nome]]
+            if items and all(i.self_ref in ctx.member_refs for i in items):
+                text = ctx.summary()  # o texto grudado do cabeçalho vira linhas legíveis
+        chunks.append(Chunk(content=text, heading=" > ".join(headings), discipline=ctx))
     return chunks
 
 

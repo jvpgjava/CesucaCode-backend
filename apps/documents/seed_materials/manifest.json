@@ -1,0 +1,40 @@
+[
+  {
+    "file": "avaliacao.md",
+    "title": "Sistema de Avaliação das Disciplinas Online",
+    "courses": [
+      "cc",
+      "ads"
+    ]
+  },
+  {
+    "file": "manual.md",
+    "title": "Manual das Disciplinas On-line",
+    "courses": [
+      "cc",
+      "ads"
+    ]
+  },
+  {
+    "file": "codigo-disciplinar-interno.md",
+    "title": "Código Disciplinar Interno (Resolução CONSU 001/2026)",
+    "courses": [
+      "cc",
+      "ads"
+    ]
+  },
+  {
+    "file": "horario-cc-2026-2.md",
+    "title": "Horário CC 2026/2 (Noturno)",
+    "courses": [
+      "cc"
+    ]
+  },
+  {
+    "file": "plano-de-ensino-cc.md",
+    "title": "Planos de Ensino de Ciência da Computação",
+    "courses": [
+      "cc"
+    ]
+  }
+]

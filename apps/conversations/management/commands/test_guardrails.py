@@ -12,6 +12,7 @@ from apps.conversations.guardrail_cases import (
     NO_INFO,
     REFUSAL,
 )
+from apps.conversations.events import TokenEvent
 from apps.conversations.models import Conversation, Message
 
 
@@ -101,7 +102,11 @@ class Command(BaseCommand):
                 for role, content in case.get("previous", []):
                     Message.objects.create(conversation=conversation, role=role, content=content)
                 try:
-                    response = "".join(services.send_message(conversation, case["prompt"]))
+                    response = "".join(
+                        event.content
+                        for event in services.send_message(conversation, case["prompt"])
+                        if isinstance(event, TokenEvent)
+                    )
                 except Exception as exc:
                     response = f"[exceção {type(exc).__name__}: {exc}]"
                 finally:

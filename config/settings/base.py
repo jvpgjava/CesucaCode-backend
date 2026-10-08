@@ -97,7 +97,13 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min"},
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "10/min",
+        # Envio de mensagens do chat, por usuário: limite por minuto (contra
+        # rajadas/scripts) e por dia (contra custo descontrolado de LLM).
+        "chat": env("CHAT_THROTTLE_RATE", default="20/min"),
+        "chat_daily": env("CHAT_DAILY_THROTTLE_RATE", default="300/day"),
+    },
 }
 
 EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
@@ -145,6 +151,25 @@ OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 DEEPSEEK_API_KEY = env("DEEPSEEK_API_KEY", default="")
 ABACUSAI_API_KEY = env("ABACUSAI_API_KEY", default="")
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
+# Opcional: o OpenRouter usa esse cabeçalho para atribuir o tráfego ao app (ranking deles).
+OPENROUTER_HTTP_REFERER = env("OPENROUTER_HTTP_REFERER", default="")
+
+# Papéis de modelo (apps/ai_providers): LLM_{PAPEL}_PROVIDER/MODEL/MAX_TOKENS/TEMPERATURE.
+# Vazio = cai em LLM_PROVIDER/LLM_MODEL (provider/model) ou no padrão do papel
+# (max_tokens/temperature; ver ai_providers.services.ROLE_DEFAULTS).
+for _role in ("ANSWER", "ROUTER", "AGENT", "JUDGE"):
+    globals()[f"LLM_{_role}_PROVIDER"] = env(f"LLM_{_role}_PROVIDER", default="")
+    globals()[f"LLM_{_role}_MODEL"] = env(f"LLM_{_role}_MODEL", default="")
+    globals()[f"LLM_{_role}_MAX_TOKENS"] = env(f"LLM_{_role}_MAX_TOKENS", default="")
+    globals()[f"LLM_{_role}_TEMPERATURE"] = env(f"LLM_{_role}_TEMPERATURE", default="")
+LLM_TIMEOUT = env.float("LLM_TIMEOUT", default=60)  # segundos
+LLM_MAX_RETRIES = env.int("LLM_MAX_RETRIES", default=2)
+# Sobrescreve o método de saída estruturada do registro de capacidades:
+# json_schema | function_calling | json_mode (vazio = usa o registro).
+LLM_STRUCTURED_METHOD = env("LLM_STRUCTURED_METHOD", default="")
+# Gemini: orçamento de thinking em tokens (0 desliga; vazio = padrão do modelo).
+LLM_THINKING_BUDGET = env("LLM_THINKING_BUDGET", default="")
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://localhost:11434")
 
 _system_prompt_path = Path(
@@ -159,6 +184,20 @@ SYSTEM_PROMPT_PATH = str(
 # o trecho é descartado em vez de virar "contexto" de uma pergunta que não tem
 # nada a ver com ele.
 RAG_MAX_DISTANCE = env.float("RAG_MAX_DISTANCE", default=0.30)
+
+# Busca híbrida: vetorial (pgvector) + textual (tsvector 'portuguese'), fundidas por
+# RRF. Desligada, volta ao comportamento antigo (só vetorial, com corte de distância).
+RAG_HYBRID_ENABLED = env.bool("RAG_HYBRID_ENABLED", default=True)
+# Gancho de reranking (retrieval.rerank). Ainda é a identidade: só ganha efeito
+# quando um reranker for implementado e o eval mostrar ganho.
+RAG_RERANK_ENABLED = env.bool("RAG_RERANK_ENABLED", default=False)
+# Tamanho máximo de cada chunk, em "tokens" aproximados (palavras + pontuação; ver
+# documents/chunking.py). Mudar isto exige `manage.py reprocess_documents`.
+RAG_CHUNK_MAX_TOKENS = env.int("RAG_CHUNK_MAX_TOKENS", default=300)
+# Tentativas e espera base (s, dobra a cada tentativa) para erros transitórios
+# (429/cota por minuto, timeout, conexão) ao gerar embeddings na ingestão.
+EMBEDDING_RETRY_ATTEMPTS = env.int("EMBEDDING_RETRY_ATTEMPTS", default=3)
+EMBEDDING_RETRY_BASE_SECONDS = env.float("EMBEDDING_RETRY_BASE_SECONDS", default=5.0)
 
 # Quantas mensagens anteriores da conversa vão pro modelo a cada turno. Sem teto,
 # conversas longas ficam cada vez mais caras/lentas e estouram o contexto.
@@ -175,3 +214,30 @@ CHAT_ALLOW_GENERAL_KNOWLEDGE = env.bool("CHAT_ALLOW_GENERAL_KNOWLEDGE", default=
 CHAT_WEB_SEARCH_ENABLED = env.bool("CHAT_WEB_SEARCH_ENABLED", default=True)
 CHAT_WEB_SEARCH_MAX_RESULTS = env.int("CHAT_WEB_SEARCH_MAX_RESULTS", default=5)
 CHAT_WEB_SEARCH_TIMEOUT = env.int("CHAT_WEB_SEARCH_TIMEOUT", default=8)
+
+# Versão do pipeline do chat, gravada em cada MessageTrace para comparar
+# resultados entre versões (v0 = baseline anterior ao harness agêntico).
+PIPELINE_VERSION = env("PIPELINE_VERSION", default="v2")
+
+# Loop agêntico (rota "composta", apps/conversations/agent.py). Desligado, as
+# perguntas compostas seguem o RAG simples. O orçamento limita custo e latência:
+# ao estourar qualquer teto, o agente para e responde com o que já coletou.
+CHAT_AGENT_ENABLED = env.bool("CHAT_AGENT_ENABLED", default=True)
+AGENT_MAX_TURNS = env.int("AGENT_MAX_TURNS", default=5)  # chamadas ao modelo com ferramentas
+AGENT_MAX_TOOL_CALLS = env.int("AGENT_MAX_TOOL_CALLS", default=8)
+AGENT_MAX_TOTAL_TOKENS = env.int("AGENT_MAX_TOTAL_TOKENS", default=40000)  # entrada + saída acumuladas
+AGENT_MAX_SECONDS = env.float("AGENT_MAX_SECONDS", default=30)
+
+# Roteador de intenção (L0 determinístico + L1 com LLM pequeno). Desligado, só o L0
+# roda e o resto cai no fallback (heurística da v0: regex de grade + pergunta anterior).
+CHAT_ROUTER_ENABLED = env.bool("CHAT_ROUTER_ENABLED", default=True)
+
+# Passos extras do pipeline v2 (apps/conversations/pipeline.py), ambos com o modelo do
+# papel "router" e ambos opcionais (falha = segue sem). Desligados, o pipeline fica
+# mais perto da v0.
+# - Suficiência: na rota direta (institucional/grade), pergunta ao modelo se os trechos
+#   recuperados sustentam a resposta; se não, o prompt manda dizer que não tem a
+#   informação confirmada em vez de preencher com suposições.
+# - Follow-ups: até 3 perguntas de continuação (evento SSE `suggestions`) depois da resposta.
+CHAT_SUFFICIENCY_CHECK_ENABLED = env.bool("CHAT_SUFFICIENCY_CHECK_ENABLED", default=True)
+CHAT_FOLLOWUPS_ENABLED = env.bool("CHAT_FOLLOWUPS_ENABLED", default=True)

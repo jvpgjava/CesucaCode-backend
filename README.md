@@ -129,6 +129,11 @@ Para subir API, frontend e Postgres (com pgvector) juntos via Docker, use o
 `docker compose up --build` na raiz do [CesucaCode-hub](https://github.com/jvpgjava/CesucaCode-hub).
 O `Dockerfile` deste repositório é o da API; o Compose do hub orquestra os três serviços.
 
+**Produção:** o `Dockerfile` usa `runserver` (desenvolvimento). Em produção use
+`gunicorn config.wsgi:application -c gunicorn.conf.py`: o arquivo configura
+workers `gthread` (8 threads) e timeout de 120 s, porque cada resposta do chat é
+um stream longo que travaria um worker `sync` inteiro.
+
 ---
 
 ## Rodando no dia a dia (depois do setup inicial)
@@ -389,22 +394,68 @@ divisão em pedaços (chunks) e geração de embedding pra cada chunk (ver seç�
 
 Para PDF/DOCX/PPTX/MD, a extração usa o [Docling](https://github.com/docling-project/docling)
 em vez de leitura de texto ingênua: ele entende layout (cabeçalhos, seções,
-tabelas, colunas). A divisão em chunks é feita de forma hierárquica a partir
-dessa estrutura — cada chunk carrega o caminho de seções a que pertence
-(campo `heading`, ex.: `"5. Modelo ER > 5.1 Entidades"`), que também é usado
-como contexto extra na hora de gerar o embedding. **Markdown (`.md`)** passa
+tabelas, colunas). A divisão em chunks usa o `HybridChunker` do Docling: parte pela estrutura
+(seções, listas, tabelas) e limita cada chunk a `RAG_CHUNK_MAX_TOKENS` (padrão
+300, contagem aproximada de palavras e pontuação, sem baixar modelo de
+tokenizador). Tabelas grandes são partidas só entre linhas e o cabeçalho da
+tabela se repete no topo de cada pedaço (grade e horários seguem legíveis em
+qualquer chunk). Cada chunk carrega o caminho de seções a que pertence (campo
+`heading`, ex.: `"5. Modelo ER > 5.1 Entidades"`). O texto enviado ao modelo
+de embedding ganha um cabeçalho determinístico — `Documento: <título> |
+Documento do curso: <cursos> | Disciplina: <nome (semestre, C/H)> | Seção:
+<heading>` — que NÃO é gravado em `content`. O título do documento entra só
+aí e no `search_vector` (tsvector `portuguese`: seção e título peso A, conteúdo
+peso B), para a busca achar o material pelo tipo/nome ("horário", "plano de
+ensino"); nunca no `content` nem no `heading`, então o LLM continua sem vê-lo.
+**Markdown (`.md`)** passa
 pelo Docling também: os títulos (`#`, `##`...) viram o `heading` de cada chunk,
 como nos PDFs — por isso é melhor enviar `.md` do que renomear pra `.txt`. TXT
 não tem estrutura pra aproveitar, então segue com divisão simples por parágrafo.
 
-**OCR fica desligado por padrão** (`do_ocr=False`) — os materiais didáticos
-são PDFs gerados digitalmente (têm texto real embutido), não escaneados, e
-OCR é a parte mais cara do processamento (~150-240s → ~40-60s por PDF real
-sem ele). Se algum material for realmente uma imagem escaneada sem texto, a
-extração falha com uma mensagem clara (`processing_error`) em vez de
-demorar minutos à toa; ligar OCR de volta é uma linha em
-`apps/documents/extraction.py` (`PdfPipelineOptions(do_ocr=True)`), se algum
-dia isso virar uma necessidade real. Tabelas usam o modo `FAST` do
+**Limpeza de boilerplate** (`apps/documents/cleaning.py`). Antes do chunking, o
+rodapé que se repete em toda página sai do texto e dos cabeçalhos: "Credenciamento
+Institucional" + parágrafo da Portaria, paginação ("2 / 102", "Página 3 de 10"),
+`www.cesuca.edu.br`, endereço/telefone e o timbre do OCR. Os padrões ficam em listas
+de regex no topo do módulo (linhas isoladas ancoradas na linha inteira; blocos
+"cabeçalho + corpo" só removem o parágrafo da Portaria logo depois de
+"Credenciamento Institucional", então uma Portaria citada em texto corrido é
+preservada) e há uma heurística opcional de "rodapé repetido": linha que vem logo
+antes do marcador de página em pelo menos metade das páginas. No Docling os itens vão
+para a camada `FURNITURE` (que o chunker ignora); TXT é limpo por linha e cada chunk
+passa por uma checagem final de linhas (itens de várias linhas do OCR).
+
+**Contexto de disciplina "pegajoso"** (`apps/documents/disciplinas.py`). Os planos de
+ensino chegam concatenados num só material, cada um iniciado por um cabeçalho de
+identificação (`Plano de Ensino - 2025/ 1º SEMESTRE`, `Curso: ...Disciplina: ...`,
+`6º SEMESTREGraduaçãoC/H Semestral: 80`, com os campos até GRUDADOS e o nome da
+disciplina quebrado em duas linhas). A ingestão detecta esses cabeçalhos
+(`parse_identification`), faz do primeiro item de cada plano uma fronteira de seção
+(o fim de um plano nunca se mistura ao começo do seguinte) e propaga a disciplina até
+a próxima identificação: o nome capitalizado vira o primeiro segmento do `heading`
+(`Modelagem de Dados > EMENTA` — vai ao LLM, nome de disciplina não é nome de
+documento), o rótulo `Modelagem de Dados (6º semestre, C/H 80 h, plano 2025/1)` entra
+no cabeçalho do embedding e o chunk de identificação passa a ter texto legível
+("Disciplina: ... / Semestre do curso: 6º / Carga horária semestral: 80 h"). Em TXT a
+identificação é procurada no próprio conteúdo dos chunks.
+
+**Grade estruturada** (model `Disciplina`, `apps/documents/grade.py`). Cada
+identificação vira uma linha (`nome`, `semestre`, `carga_horaria`, `periodo_letivo`,
+`course`, `index_inicio` = primeiro chunk do plano), deduplicada por curso + nome com o
+período letivo mais recente; é refeita a cada (re)processamento. A consulta
+(`grade.list_disciplinas`) respeita os documentos prontos que o usuário vê e o curso da
+disciplina (um material compartilhado por CC e ADS não mostra ao aluno de ADS as
+disciplinas do CC). Ela alimenta a tool `consultar_grade` do agente e o bloco
+"Disciplinas cadastradas:" da rota direta (ver "Conversas"). Para listar o que foi
+extraído: `Disciplina.objects.values_list("semestre", "nome")`.
+
+**OCR só entra como fallback.** O padrão é `do_ocr=False`: os materiais
+costumam ser PDFs digitais (têm texto real) e OCR é a parte mais cara do
+processamento (~150-240s → ~40-60s por PDF sem ele). Se a extração de um PDF
+vier vazia ou quase vazia (< 200 caracteres), a ingestão tenta de novo com
+`do_ocr=True` (um segundo conversor, criado sob demanda) — é o caso de PDFs
+escaneados, como o Código Disciplinar. Se o OCR não estiver disponível ou ainda
+assim não extrair texto, o documento fica `failed` com uma mensagem clara em
+`processing_error`. Tabelas usam o modo `FAST` do
 TableFormer (em vez de `ACCURATE`) pelo mesmo motivo de custo.
 
 Processamento é **assíncrono, em background**: o upload responde na hora com
@@ -417,11 +468,23 @@ desse endpoint enquanto o status é `processing`.
 
 Isso é uma fila em memória do processo, não durável: se o servidor cair ou
 reiniciar (ex.: autoreload do `runserver`) no meio do processamento, aquele
-job se perde e o documento fica preso em `processing` — nesse caso, usar
-`reprocess/` resolve. Se o volume de uploads crescer a ponto disso incomodar
-(ou for rodar com múltiplos processos/workers, onde um pool em memória por
-processo processa menos em paralelo do que parece), o próximo passo natural
-é migrar para uma fila de verdade (Celery + Redis).
+job se perde e o documento fica preso em `processing`. Para isso existe
+`python manage.py recover_documents [--minutes 15]`, que reenfileira os
+documentos presos em `processing` há mais de N minutos; o
+`docker-entrypoint.py` o dispara em segundo plano a cada boot (e `reprocess/`
+continua valendo para casos pontuais). Erros transitórios de embedding
+(429/cota por minuto, timeout, conexão) são repetidos com backoff exponencial
+(`EMBEDDING_RETRY_ATTEMPTS=3`, `EMBEDDING_RETRY_BASE_SECONDS=5`). Se o volume de
+uploads crescer a ponto disso incomodar (ou for rodar com múltiplos
+processos/workers), o próximo passo natural é uma fila persistente de verdade.
+
+> **Mudou chunking, limpeza de boilerplate, contexto de disciplina,
+> `RAG_CHUNK_MAX_TOKENS`, o cabeçalho contextual ou os
+> prefixos de embedding?** Rode `python manage.py reprocess_documents`: os
+> chunks e vetores antigos não são comparáveis com os novos. Com o provider
+> `ollama` e modelo `embeddinggemma`, a consulta recebe o prefixo
+> `task: search result | query: ` e o documento `title: none | text: `
+> (`ai_providers.embedding_text_for`).
 
 **Um material pode valer para mais de um curso.** No upload e na edição
 informe `courses` (lista de códigos, ex.: `cc`, `ads`; ao menos um). Um material
@@ -487,9 +550,36 @@ o embedding são **independentes**: dá pra usar um provider pra conversa e
 outro pra gerar os vetores dos documentos.
 
 **Chat** (`LLM_PROVIDER`): `gemini`, `openai`, `claude`, `ollama`,
-`deepseek` ou `abacusai`. `deepseek` e `abacusai` usam a API compatível com
-OpenAI de cada um (com `base_url` próprio), então reaproveitam o mesmo
-pacote (`langchain-openai`).
+`deepseek`, `abacusai` ou `openrouter`. `deepseek`, `abacusai` e `openrouter`
+usam a API compatível com OpenAI de cada um (com `base_url` próprio), então
+reaproveitam o mesmo pacote (`langchain-openai`). No OpenRouter o modelo vai
+no formato `provedor/modelo` (ex.: `google/gemini-2.5-flash`) e a chave em
+`OPENROUTER_API_KEY`.
+
+**Papéis de modelo:** `get_chat_model(role)` aceita `answer` (resposta final,
+padrão), `router` (classificador de intenção), `agent` (passos do loop
+agêntico) e `judge` (avaliação). Cada papel pode ter seu próprio provider e
+modelo, o que permite, por exemplo, um modelo barato só para o roteador:
+
+```env
+LLM_ROUTER_PROVIDER=openrouter
+LLM_ROUTER_MODEL=google/gemini-2.5-flash-lite
+# também: LLM_<PAPEL>_MAX_TOKENS e LLM_<PAPEL>_TEMPERATURE
+```
+
+O que não for definido cai em `LLM_PROVIDER`/`LLM_MODEL`. Padrões de
+`max_tokens`/temperatura: answer 1500/0.3, router 256/0, agent 1024/0.2,
+judge 512/0. Globais: `LLM_TIMEOUT` (60 s), `LLM_MAX_RETRIES` (2),
+`LLM_STRUCTURED_METHOD` (força `json_schema`, `function_calling` ou
+`json_mode`; vazio usa o registro de capacidades em
+`apps/ai_providers/capabilities.py`) e `LLM_THINKING_BUDGET` (Gemini; vazio =
+padrão do modelo). Atenção: no Gemini com thinking, `max_tokens` também conta
+os tokens de raciocínio; se as respostas vierem cortadas, aumente o limite ou
+reduza o `LLM_THINKING_BUDGET`.
+
+`invoke_structured(Schema, messages, role)` pede saída estruturada com 1 retry
+de reparo e nunca levanta exceção de provider (devolve `ok=False` e o valor
+padrão).
 
 **Embedding** (`EMBEDDING_PROVIDER`): `gemini` ou `ollama` — os dois
 providers testados que têm uma API de embedding simples (texto entra, vetor
@@ -510,6 +600,7 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 DEEPSEEK_API_KEY=
 ABACUSAI_API_KEY=
+OPENROUTER_API_KEY=
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
@@ -564,6 +655,16 @@ python manage.py test_ai_provider
 Isso manda uma mensagem simples pro chat e gera um embedding de teste,
 mostrando se cada provider respondeu certo ou qual foi o erro.
 
+Para validar o contrato de um papel de modelo (rode sempre que trocar de
+provider ou modelo; consome tokens reais):
+
+```bash
+python manage.py test_ai_provider --role router --check stream,tools,structured
+```
+
+`stream` confere o streaming e o `usage_metadata`, `tools` faz um tool calling
+simples e `structured` testa a saída estruturada com o método do registro.
+
 ---
 
 ## Conversas (Chat com RAG)
@@ -572,13 +673,31 @@ Chat em tempo real com os materiais didáticos como contexto. Cada conversa é
 só do usuário que criou — CSAdmin/CSCoordinator não veem conversas de
 outras pessoas, e vice-versa.
 
-**Como funciona:** ao enviar uma mensagem, o backend gera o embedding da
-pergunta, busca os pedaços de material mais parecidos (limitados aos
-materiais que aquele usuário tem permissão de ver — mesmo escopo por
-curso/papel dos materiais didáticos), monta o prompt com esse contexto
-mais o histórico da conversa, e manda pro provider de chat configurado
-(`LLM_PROVIDER`). Se não achar nenhum material relevante, o modelo é
-instruído a dizer isso em vez de inventar uma resposta.
+**Como funciona (pipeline v2, `apps/conversations/pipeline.py`):** ao enviar uma
+mensagem, o backend a salva e a roteia (`routing.route`: regras L0, depois um LLM
+pequeno no L1, com fallback para a heurística da v0). A decisão escolhe a **rota**
+(enviada no evento SSE `meta`) e o prompt da intenção:
+
+| Rota | Quando | O que faz |
+|---|---|---|
+| `clarificacao` | admin/coordenador de vários cursos perguntando sobre grade ou algo institucional sem curso definido | pergunta "CC ou ADS?" (texto fixo, sem LLM); estudante nunca cai aqui |
+| `meta` | cumprimento, agradecimento, "o que você faz" | resposta curta, sem busca |
+| `recusa` | `fora_escopo` ou `manipulacao` | sem busca nem web; resposta de até 300 tokens que recusa em 1–2 frases e oferece ajuda dentro do escopo |
+| `direta` | pergunta de um assunto só | busca híbrida com a `standalone_query` (filtrada pelo curso e pelas permissões), web só em grade, checagem de suficiência e resposta |
+| `pedagogica` | `exercicio_avaliativo` | como a direta, com a escada de dicas no prompt; sem web nem checagem de suficiência |
+| `composta` | pergunta com vários assuntos/etapas | loop agêntico com ferramentas (`agent.py`); sem agente ou se ele falhar antes do primeiro token, cai na `direta` (step `fallback` no trace) |
+
+Depois do texto vêm os **follow-ups** (até 3 perguntas de continuação, evento
+`suggestions`; nunca em recusa/clarificação), a **guarda de saída** e o
+**`MessageTrace`**. Os eventos saem nesta ordem: `status(routing)` → `meta` →
+`status`... → tokens → `suggestions` → `done` (ou `error`). A **checagem de
+suficiência** (`CHAT_SUFFICIENCY_CHECK_ENABLED`) roda na rota direta de
+`info_institucional`/`grade_disciplinas` quando há trechos: o papel `router` diz
+se o contexto sustenta a resposta; se não, o prompt manda dizer que não tem a
+informação confirmada em vez de preencher com suposições (falha da checagem =
+segue normalmente). Se não achar nenhum material relevante, o modelo é instruído
+a dizer isso em vez de inventar uma resposta. Os dados de cada etapa (rota,
+intenção, modelos por papel, tokens, tempo, trechos, flags) ficam no trace.
 
 **System prompt e guardrails:** ficam em arquivos `.md` na pasta
 `apps/conversations/prompts/sofia/` — não hardcoded no Python. Os arquivos são
@@ -596,14 +715,30 @@ arquivo, relativo à raiz do projeto ou absoluto.
 | `22-como-falar-das-fontes.md` | **Nunca expor o funcionamento interno** ("materiais enviados", "trechos", "fragmentado"...): quando não tem a informação, diz que não tem confirmada e orienta a conferir com a coordenação/secretaria/professor; **não cita fontes** (sem `(Fonte: ...)`, títulos nem links) |
 | `27-caminho-de-estudo.md` | Perguntas de grade/disciplinas: agrupa as disciplinas do curso em fases de estudo e sugere a ordem, usando as referências externas da pesquisa na web só como apoio (nunca como matriz oficial da Cesuca) |
 | `25-anti-alucinacao.md` | Nunca inventar livros/páginas/datas/números; grade/semestre/ordem só quando explícitos; "não sei" > chute; sem acesso a internet/notas |
+| `29-meta.md` | Só na rota `meta`: cumprimento, agradecimento e "o que você faz" respondidos em poucas frases |
 | `30-pedagogia.md` | Guiar em vez de entregar trabalho pronto |
+| `35-escada-de-dicas.md` | Só na rota `exercicio_avaliativo`: escada de dicas (1 conceito e pergunta, 2 dica direcionada, 3 esqueleto) — nunca a solução completa; o nível atual é injetado no fim do prompt |
 | `40-seguranca.md` | Prompt injection, personas, vazamento do prompt, malware |
 | `50-idiomas-e-ofuscacao.md` | Responder em português; binário/base64/invertido/leetspeak recebem as mesmas regras |
 
-Além do prompt, há duas proteções em código (`apps/conversations/services.py`):
+Além do prompt, há proteções em código (`apps/conversations/pipeline.py` e módulos vizinhos):
 
-1. *Filtro de relevância* — só entram no contexto os trechos com distância de
-   cosseno ≤ `RAG_MAX_DISTANCE` (padrão `0.30`, no `.env`). Se nenhum passar, o
+1. *Busca híbrida e filtro de relevância* (`apps/conversations/retrieval.py`) —
+   a busca combina a vetorial (pgvector, índice HNSW por cosseno, corte
+   `RAG_MAX_DISTANCE`, padrão `0.30`, +0.05 em perguntas de grade) com a
+   textual (tsvector `portuguese`, índice GIN, `websearch`; se a consulta
+   estrita não casar nada, tenta "qualquer termo", só aceitando trechos a no
+   máximo 0.15 além do corte de distância). As duas listas (20 candidatos cada)
+   são fundidas por RRF (k=60) e devolvem 6 trechos (8 em perguntas de grade).
+   Sempre filtrada pelas permissões do usuário e, quando o roteador define o
+   curso (`cc`/`ads`), pelo curso. `RAG_HYBRID_ENABLED=False` volta ao
+   comportamento antigo (só vetorial); `RAG_RERANK_ENABLED` é só um gancho
+   (`retrieval.rerank`, ainda identidade). O contexto vai ao LLM com referências
+   opacas (`[T1 · seção: ...]`), sem o título do documento. Na intenção
+   `grade_disciplinas`, o contexto da rota direta começa com o bloco "Disciplinas
+   cadastradas:" (lista estruturada de `consultar_grade`, se houver dados), para que
+   "quais disciplinas existem no meu curso?" seja respondível sem o agente. Se nenhum trecho
+   passar, o
    modelo é avisado de que nada nos materiais foi relevante e, se a pergunta
    for de computação, responde com conhecimento geral **avisando que não veio
    dos materiais**. Ele decide *se há material relevante*, não *se o assunto é
@@ -643,9 +778,28 @@ Além do prompt, há duas proteções em código (`apps/conversations/services.p
    (`5`) e `CHAT_WEB_SEARCH_TIMEOUT` (`8`). Ignorada no modo estrito. Adiciona
    alguns segundos à primeira resposta dessas perguntas.
 
-Não há limite de quantidade de mensagens por usuário nem limite imposto ao
-modelo (tokens, temperatura etc.) — só o teto de histórico acima, que é
-janela de contexto.
+7. *Referências opacas* — o contexto enviado ao modelo identifica cada trecho
+   como `[T1 · seção: <título da seção>]` (ou só `[T1]`); o título do documento
+   nunca vai ao prompt, e o prompt manda não citar essas referências.
+8. *Guarda de saída* (`apps/conversations/guard.py`) — ao fim de cada resposta,
+   confere vazamentos: vocabulário interno (`INTERNAL_TERMS`), trechos do
+   prompt (`LEAK_FRAGMENTS`), títulos de documentos que o usuário enxerga
+   (com ≥ 2 palavras e ≥ 8 caracteres, sem acento/extensão — títulos de uma
+   palavra só geram falso positivo) e referências `[T#]`. As flags vão para o
+   trace e as referências são removidas do texto **salvo**. Como a resposta é
+   transmitida por streaming, a guarda não desfaz o que o aluno já viu.
+9. *Rastreamento (`MessageTrace`)* — cada resposta grava, no admin (somente
+   leitura), versão do pipeline, rota, modelos, tokens, latência, tempo até o
+   primeiro token, etapas, ids/distâncias dos trechos e flags da guarda. Não guarda
+   texto do aluno nem da resposta.
+10. *Limite de uso* — por usuário, `CHAT_THROTTLE_RATE` (padrão `20/min`) e
+    `CHAT_DAILY_THROTTLE_RATE` (padrão `300/day`) no envio de mensagens; passou
+    do limite, responde `429` com mensagem em português e `Retry-After`. O
+    contador usa o cache do Django (em memória por padrão: com vários
+    processos, configure um cache compartilhado).
+
+Não há limite imposto ao modelo (tokens, temperatura etc.) além do teto de
+histórico, que é janela de contexto.
 
 O prompt reduz bastante, mas não elimina, a chance de burlar as regras com
 pedidos elaborados — reveja os arquivos conforme surgirem casos novos.
@@ -686,26 +840,38 @@ Todas as rotas ficam sob `/api/conversations/`:
 | GET | `/api/conversations/{id}/messages/` | Histórico completo de mensagens |
 | POST | `/api/conversations/{id}/messages/send/` | Enviar uma mensagem — resposta em streaming |
 | GET | `/api/conversations/suggestions/` | Sugestões de perguntas prontas, de acordo com os materiais que eu posso ver |
-| PATCH | `/api/conversations/{id}/messages/{message_id}/feedback/` | Avaliar uma resposta: `{"rating": 1}` (👍), `{"rating": -1}` (👎) ou `null` (remove) |
+| PATCH | `/api/conversations/{id}/messages/{message_id}/feedback/` | Avaliar uma resposta: `{"feedback": 1}` (👍), `{"feedback": -1, "reason": "incorreta", "comment": "..."}` (👎 com motivo opcional) ou `{"feedback": null}` (remove). `reason`: `incorreta`, `incompleta`, `nao_entendeu`, `fora_do_curso`, `outro`; `comment` até 500 caracteres; ao voltar para 👍/`null` os dois são apagados. `rating` segue aceito como alias de `feedback` |
 
 O envio de mensagem **não devolve um JSON único** — a resposta vem em
 tempo real via [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
 (`Content-Type: text/event-stream`), pedaço por pedaço, do mesmo jeito que
-ChatGPT/Claude mostram a resposta "sendo digitada". Cada evento vem como:
+ChatGPT/Claude mostram a resposta "sendo digitada". Corpo da requisição:
+`{"content": "...", "regenerate": false}`. Eventos:
 
 ```
+event: meta
+data: {"user_message_id": 123, "route": null}
+
+event: status
+data: {"step": "searching", "label": "Procurando nas informações do curso…"}
+
 data: {"content": "pedaço de texto"}
 
-data: {"content": "mais um pedaço"}
+event: suggestions
+data: {"items": ["Pergunta 1?", "Pergunta 2?"]}
 
 event: done
-data: {}
+data: {"message_id": 456}
 ```
 
-(ou `event: error` se algo falhar no meio do caminho). A mensagem do
-usuário e a resposta completa do assistente são salvas no banco
-automaticamente — não precisa (nem dá pra) mandar a resposta de volta pra
-API depois.
+(ou `event: error` com `{"message": "texto amigável"}` se algo falhar). Os
+tokens usam o formato padrão (sem `event:`), compatível com clientes que só leem
+`data: {"content": ...}`. Os rótulos de `status` vêm de um dicionário fixo
+(`apps/conversations/events.py`) e nunca carregam argumentos internos.
+`regenerate: true` apaga a última resposta e a pergunta que a gerou e processa
+`content` como nova. A mensagem do usuário é salva antes de gerar e a resposta do
+assistente ao final (se o cliente desconectar, fica o texto parcial) — não
+precisa (nem dá pra) mandar a resposta de volta pra API depois.
 
 Exemplo com curl (`-N` desativa o buffer, pra ver o streaming chegando aos
 poucos):
@@ -716,7 +882,155 @@ curl -N -X POST http://127.0.0.1:8000/api/conversations/1/messages/send/ \
   -d '{"content": "O que esse material fala sobre recursão?"}'
 ```
 
+### Loop agêntico (rota composta)
+
+Perguntas compostas (vários assuntos, comparações) podem ser respondidas por um
+loop agêntico controlado (`apps/conversations/agent.py`): um modelo com
+ferramentas (papel `agent`) pesquisa nos materiais em poucas voltas e, depois,
+a resposta ao aluno é gerada em streaming pelo papel `answer`, a partir do
+contexto coletado. As ferramentas (`apps/conversations/tools.py`) são
+`buscar_materiais`, `ler_contexto` (trechos vizinhos), `consultar_grade`
+(`curso`, `semestre`: lista as disciplinas cadastradas, com nome, semestre e C/H, a
+partir da tabela `Disciplina`; avisa que vêm dos planos de ensino disponíveis e que
+o semestre pode variar por período letivo; só do que o usuário pode ver) e
+`pesquisar_web` (só se
+`CHAT_ALLOW_GENERAL_KNOWLEDGE` e `CHAT_WEB_SEARCH_ENABLED`). O usuário e as
+permissões vêm do servidor, nunca do modelo, e as saídas só trazem referências
+opacas `[T#]` e o título da seção — nunca o título do documento.
+
+O custo e a latência são limitados por um orçamento; ao estourar qualquer teto,
+o agente para e responde com o que já coletou (o motivo fica no trace):
+
+```
+CHAT_AGENT_ENABLED=True      # False: perguntas compostas seguem o RAG simples
+AGENT_MAX_TURNS=5            # chamadas ao modelo com ferramentas
+AGENT_MAX_TOOL_CALLS=8
+AGENT_MAX_TOTAL_TOKENS=40000 # entrada + saída acumuladas nas voltas
+AGENT_MAX_SECONDS=30
+```
+
+A instrução final do agente é calibrada pela intenção do roteador: **fatos
+institucionais** (datas, notas, regras, disciplinas, horários, professores) só valem
+se estiverem explícitos no contexto — senão o modelo diz que não tem a informação
+confirmada —, mas **conteúdo técnico de computação** é explicado com conhecimento
+geral (avisando que é uma explicação geral), usando os materiais quando houver. Em
+`CHAT_ALLOW_GENERAL_KNOWLEDGE=False` (modo estrito) a regra técnica não existe e a
+abstenção continua valendo para tudo. A rota direta faz o mesmo em `conteudo_tecnico`
+com uma nota ao final da pergunta (`TECHNICAL_NOTE`); a checagem de suficiência segue
+só em `info_institucional` e `grade_disciplinas`.
+
+Se o modelo do papel `agent` não suporta ferramentas (ver
+`apps/ai_providers/capabilities.py`), o agente fica indisponível
+(`AgentUnavailable`) e o pipeline cai para o RAG simples. Os status enviados ao
+cliente usam só rótulos fixos ("Procurando nas informações do curso…", "Lendo 3
+trechos com atenção…"...), sem consultas nem argumentos das ferramentas.
+
 ---
+
+### Roteamento de intenção
+
+Antes de buscar nos materiais, `apps/conversations/routing.py` classifica a
+mensagem (`route(conversation, texto)` → `RouteDecision` + uso de tokens):
+
+- **L0 (regras, sem custo):** saudação/agradecimento/"o que você faz" viram
+  `meta`; tentativas de injeção ou ofuscação (ignore as instruções, finja ser,
+  system prompt, DAN, base64/binário/hex, caracteres invisíveis) viram
+  `manipulacao`. Os dois **pulam o L1**. Perguntas de grade e menções a CC/ADS
+  só viram dicas para o L1.
+- **L1 (LLM pequeno, papel `router`):** devolve `intent` (`meta`,
+  `info_institucional`, `grade_disciplinas`, `conteudo_tecnico`,
+  `exercicio_avaliativo`, `fora_escopo`, `manipulacao`), `course`,
+  `complexity` (`direta` ou `composta`) e a `standalone_query` (pergunta
+  reescrita com o histórico, sem dados pessoais, usada na busca nos materiais
+  e na web).
+- **Fallback:** se o L1 falhar ou `CHAT_ROUTER_ENABLED=False`, vale a heurística
+  da v0 (pergunta curta é somada à pergunta anterior; regex de grade ou
+  `info_institucional`; complexidade `direta`), com `source="fallback"`.
+
+**Curso:** estudante usa sempre o curso do perfil (nunca recebe a pergunta "CC
+ou ADS?"); coordenador de um curso só, esse curso; admin e coordenador de vários
+cursos: menção explícita na mensagem > curso já salvo na conversa > decisão do
+L1 > `indefinido` (e então, só em perguntas de grade ou institucionais, a
+decisão traz `clarification` com a pergunta de CC ou ADS). O curso resolvido
+fica em `Conversation.metadata["course"]`, junto com `hint_level` (degrau da
+escada de dicas) e `last_intent`.
+
+**Prompt por rota:** `build_system_prompt(intent, hint_level=...)`
+(`apps/conversations/prompts.py`) monta o prompt com a base (todos os arquivos
+que não estão em `ROUTE_MODULES`) mais os módulos da rota: `27-caminho-de-estudo`
+em `grade_disciplinas`, `29-meta` em `meta`, `30-pedagogia` em
+`conteudo_tecnico`/`exercicio_avaliativo` e `35-escada-de-dicas` em
+`exercicio_avaliativo`. Sem intenção, devolve todos os arquivos (como o
+`get_system_prompt()` antigo).
+
+### Variantes do pipeline (v0, v1, v2) por flags
+
+Os traces guardam `PIPELINE_VERSION`, mas as variantes comparadas na pesquisa são
+escolhidas pelas flags abaixo (reinicie o servidor ao mudar o `.env`):
+
+| Flag | v0 (baseline) | v1 (router + RAG) | v2 (completo, padrão) |
+|---|---|---|---|
+| `CHAT_ROUTER_ENABLED` | `False` | `True` | `True` |
+| `RAG_HYBRID_ENABLED` | `False` | `True` | `True` |
+| `CHAT_AGENT_ENABLED` | `False` | `False` | `True` |
+| `CHAT_SUFFICIENCY_CHECK_ENABLED` | `False` | `True` | `True` |
+| `CHAT_FOLLOWUPS_ENABLED` | `False` | `True` | `True` |
+| `PIPELINE_VERSION` (rótulo do trace) | `v0` | `v1` | `v2` |
+
+Na v0 o roteador LLM não roda (fallback = heurística antiga, `source="fallback"`),
+o prompt é o **completo** (sem módulos por intenção), a busca é só vetorial, não há
+agente, checagem de suficiência nem follow-ups. Diferenças que permanecem mesmo na
+v0: o L0 continua ativo (saudação vai para a rota `meta` e injeção/ofuscação para a
+`recusa`, ambas sem busca), o admin recebe a pergunta "CC ou ADS?" em vez de
+depender do prompt, a busca usa 6 trechos (8 em grade) e as referências são
+opacas, sem o título do documento.
+
+## Avaliação (evals)
+
+O comando `run_evals` mede o chat com um **golden set** de 80 casos escritos a
+partir dos materiais reais do seed (`apps/conversations/evals/golden.yaml`):
+avaliação/notas, código disciplinar, horário, planos de ensino, grade, perguntas
+compostas (multi-documento), follow-ups curtos, "sem informação" (fatos que não
+estão nos materiais), recusa/manipulação, exercício avaliativo (dicas, não
+solução), meta/saudação e admin sem curso (esperando a pergunta "CC ou ADS?").
+Cada caso diz a expectativa (`resposta`, `sem_info`, `recusa` ou `clarificacao`),
+os fatos que a resposta precisa conter (`must_include`, com alternativas `a|b`) e
+os trechos que o retrieval deve trazer (`retrieval_expect`, para o hit@k).
+
+```bash
+# faz chamadas reais ao LLM e ao embedding (tem custo)
+python manage.py run_evals --variant v0 --judge          # baseline
+python manage.py run_evals --variant v1 --judge
+python manage.py run_evals --variant v2 --judge
+
+python manage.py run_evals --tag avaliacao --limit 5     # amostra rápida (--no-judge é o padrão)
+python manage.py run_evals --id aval-nf-formula --id "disc-*"
+python manage.py run_evals --compare apps/conversations/evals/results/v0-<data>.json \
+                                     apps/conversations/evals/results/v2-<data>.json   # sem LLM
+```
+
+- **Variantes** (`--variant`): `v0`, `v1` e `v2` aplicam as flags da tabela
+  acima com `override_settings`, só durante a rodada (o `.env` não muda);
+  `current` usa as settings como estão. A rodada é sequencial, cada caso com
+  usuário e conversa temporários (apagados no fim).
+- **Métricas** (geral, por tag e por expectativa): acerto da expectativa
+  (resposta correta, abstenção, recusa ou clarificação), fração de `must_include`,
+  hit@k e recall do retrieval (lê `trace.chunk_ids`), taxa de vazamento
+  (`guard.check_output` com os títulos dos materiais), rota esperada, p50/p95 de
+  latência e do primeiro token, tokens médios e distribuição de rotas. Com
+  `--judge`, o papel `judge` (configure `LLM_JUDGE_*` com um modelo mais forte
+  que o avaliado) acrescenta correção, fidelidade e abstenção; sem ele, vale a
+  heurística (`acerto (heur.)`). O fim da saída mostra os limiares de aceite do
+  plano (vazamento = 0, recusa/abstenção >= 90%, fidelidade >= 0,85, p95 da rota
+  direta <= 6 s); `--strict` falha o comando se algum não for atendido.
+- **Resultados**: `apps/conversations/evals/results/<variante>-<data>.json`
+  (completo, com respostas, trace e veredito do juiz) e `.csv` por caso. A pasta
+  é ignorada pelo git; versione só os relatórios usados na pesquisa.
+- **Custo e tempo**: ~80 chamadas ao chat por variante (mais 80 do juiz com
+  `--judge`). Estimativa: 5 a 15 min por variante (v2 é a mais lenta, pelo
+  agente), algumas centenas de milhares de tokens de entrada por rodada. Use `--tag`/`--limit` para
+  iterar. Os testes (`pytest apps/conversations/tests/test_evals.py`) não chamam
+  LLM.
 
 ## Documentação da API (Swagger)
 

@@ -3,14 +3,19 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from datetime import timedelta
+
 from django.conf import settings
+from django.contrib.postgres.search import SearchVector
+from django.db.models import Value
 from django.db import close_old_connections, transaction
+from django.utils import timezone
 
 from apps.ai_providers import services as ai_providers
 from apps.ai_providers.exceptions import ProviderConfigurationError
 
-from . import chunking, extraction
-from .models import Document, DocumentChunk
+from . import chunking, disciplinas, extraction
+from .models import Disciplina, Document, DocumentChunk
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +41,25 @@ def create_document(*, title, courses, file, uploaded_by) -> Document:
 
 def reprocess_document(document: Document) -> Document:
     document.chunks.all().delete()
+    document.disciplinas.all().delete()
     document.status = Document.Status.PROCESSING
     document.processing_error = ""
     document.save(update_fields=["status", "processing_error", "updated_at"])
     _executor.submit(_process_document_in_background, document.id)
     return document
+
+
+def recover_stuck_documents(minutes: int = 15) -> list[Document]:
+    """Reenfileira documentos presos em `processing` há mais de `minutes` minutos.
+
+    O pool de processamento vive na memória do processo: se o servidor reinicia no
+    meio de uma ingestão, o documento fica em `processing` para sempre. Chamado no
+    boot (`manage.py recover_documents`, via docker-entrypoint.py) e à mão."""
+    limit = timezone.now() - timedelta(minutes=minutes)
+    stuck = list(Document.objects.filter(status=Document.Status.PROCESSING, updated_at__lt=limit))
+    for document in stuck:
+        reprocess_document(document)
+    return stuck
 
 
 def _process_document_in_background(document_id: int) -> None:
@@ -58,6 +77,15 @@ def _process_document_in_background(document_id: int) -> None:
         close_old_connections()
 
 
+# PDF cuja extração sem OCR rende menos que isso (caracteres) é tratado como
+# escaneado: tenta de novo com OCR antes de desistir.
+OCR_MIN_CHARS = 200
+
+
+def _total_chars(chunks: list[chunking.Chunk]) -> int:
+    return sum(len(chunk.content) for chunk in chunks)
+
+
 def _extract_chunks(document: Document) -> list[chunking.Chunk]:
     ext = extraction.get_extension(document.file.name)
 
@@ -69,20 +97,52 @@ def _extract_chunks(document: Document) -> list[chunking.Chunk]:
             )
         return chunking.chunk_text(text)
 
-    docling_document = extraction.convert_document(document.file, document.file.name)
-    chunks = chunking.chunk_docling_document(docling_document)
-    if not chunks:
-        raise extraction.UnsupportedFileTypeError(
-            "Não foi possível extrair texto do arquivo (pode estar vazio ou ser uma "
-            "imagem escaneada sem OCR)."
+    data = document.file.read()
+    chunks = chunking.chunk_docling_document(extraction.convert_document(data, document.file.name))
+
+    if ext == "pdf" and _total_chars(chunks) < OCR_MIN_CHARS:
+        # Sem texto nativo: provavelmente um PDF escaneado. OCR é lento, então só
+        # roda aqui (conversor separado, criado sob demanda). Se o OCR não estiver
+        # disponível, OcrUnavailableError sobe com uma mensagem clara.
+        logger.info("Documento %s sem texto nativo; tentando OCR.", document.id)
+        chunks = chunking.chunk_docling_document(
+            extraction.convert_document(data, document.file.name, ocr=True)
         )
+        if _total_chars(chunks) < OCR_MIN_CHARS:
+            raise extraction.UnsupportedFileTypeError(
+                "Não foi possível extrair texto do arquivo nem com OCR (pode estar vazio "
+                "ou ilegível)."
+            )
+
+    if not chunks:
+        raise extraction.UnsupportedFileTypeError("Não foi possível extrair texto do arquivo (pode estar vazio).")
     return chunks
 
 
-def _embedding_input(chunk: chunking.Chunk) -> str:
+def _course_label(document: Document) -> str:
+    return ", ".join(course.name for course in document.courses.all())
+
+
+def _embedding_input(chunk: chunking.Chunk, course_label: str = "", document_title: str = "") -> str:
+    """Texto que vai ao modelo de embedding (o `content` salvo NÃO inclui o cabeçalho).
+
+    Cabeçalho contextual determinístico para o chunk "saber" de onde veio: título do
+    documento, curso(s), disciplina vigente (com semestre e C/H) e seção. O título do
+    documento entra AQUI (e no search_vector) para a busca achar o material pelo tipo/
+    nome ("horário", "plano de ensino"), mas nunca é salvo no `content`/`heading`: o LLM
+    só vê esses dois (via `format_context`), então o título continua sem chegar a ele.
+    Depois, aplica o prefixo de tarefa do modelo, se houver."""
+    parts = []
+    if document_title:
+        parts.append(f"Documento: {document_title}")
+    if course_label:
+        parts.append(f"Documento do curso: {course_label}")
+    if chunk.discipline is not None:
+        parts.append(f"Disciplina: {chunk.discipline.label}")
     if chunk.heading:
-        return f"{chunk.heading}\n\n{chunk.content}"
-    return chunk.content
+        parts.append(f"Seção: {chunk.heading}")
+    text = f"{' | '.join(parts)}\n\n{chunk.content}" if parts else chunk.content
+    return ai_providers.embedding_text_for("document", text)
 
 
 class _EmbeddingThrottle:
@@ -118,19 +178,72 @@ def _is_quota_error(exc: Exception) -> bool:
     return "429" in text or "resource_exhausted" in text or "quota" in text
 
 
+_TRANSIENT_MARKERS = (
+    "429", "resource_exhausted", "quota", "rate limit", "timeout", "timed out",
+    "connection", "unavailable", "503", "502", "504", "temporarily",
+)  # fmt: skip
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Erros que valem nova tentativa: cota/limite por minuto, timeout, rede."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+def _embed_batch_with_retry(model, batch: list[str]) -> list[list[float]]:
+    """`embed_documents` com backoff exponencial (EMBEDDING_RETRY_BASE_SECONDS, dobra a
+    cada tentativa) só para erros transitórios. Erros permanentes sobem na hora; se
+    as tentativas acabarem, sobe o último erro (tratado em _process_document)."""
+    attempts = max(1, settings.EMBEDDING_RETRY_ATTEMPTS)
+    for attempt in range(attempts):
+        try:
+            return model.embed_documents(batch)
+        except Exception as exc:
+            if attempt == attempts - 1 or not _is_transient_error(exc):
+                raise
+            delay = settings.EMBEDDING_RETRY_BASE_SECONDS * (2**attempt)
+            logger.warning(
+                "Embedding falhou (%s); tentativa %d/%d, nova tentativa em %.0fs.",
+                type(exc).__name__, attempt + 1, attempts, delay,
+            )  # fmt: skip
+            time.sleep(delay)
+    raise AssertionError("inalcançável")
+
+
 def _embed_documents(texts: list[str]) -> list[list[float]]:
-    """Embeda em lotes (`EMBEDDING_BATCH_SIZE`), espaçados se houver teto configurado.
-    Erros do provider, inclusive de cota, sobem normalmente."""
+    """Embeda em lotes (`EMBEDDING_BATCH_SIZE`), espaçados se houver teto configurado
+    e com retry para erros transitórios. Os demais erros do provider sobem normalmente."""
     model = ai_providers.get_embedding_model()
     size = settings.EMBEDDING_BATCH_SIZE
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), size):
         batch = texts[start : start + size]
         _embedding_throttle.wait(len(batch))
-        embeddings.extend(model.embed_documents(batch))
+        embeddings.extend(_embed_batch_with_retry(model, batch))
     if embeddings:
         ai_providers.validate_embedding_dimensions(embeddings[0])
     return embeddings
+
+
+def update_search_vectors(document: Document) -> None:
+    """Preenche o tsvector (busca textual) dos chunks do documento: seção (que já leva o
+    nome da disciplina) e título do documento com peso A, conteúdo com peso B, na config
+    'portuguese'. O título só existe aqui, no índice: nunca no texto mostrado ao LLM."""
+    document.chunks.update(
+        search_vector=SearchVector("heading", Value(document.title), weight="A", config="portuguese")
+        + SearchVector("content", weight="B", config="portuguese")
+    )
+
+
+def sync_disciplinas(document: Document, chunks: list[chunking.Chunk]) -> int:
+    """Refaz a tabela `Disciplina` do documento a partir dos planos detectados nos
+    chunks (ver `disciplinas.build_disciplinas`). Devolve quantas linhas gravou."""
+    document.disciplinas.all().delete()
+    rows = disciplinas.build_disciplinas(chunks, list(document.courses.all()))
+    Disciplina.objects.bulk_create([Disciplina(document=document, **row) for row in rows])
+    return len(rows)
 
 
 def _process_document(document: Document) -> None:
@@ -141,7 +254,8 @@ def _process_document(document: Document) -> None:
         finally:
             document.file.close()
 
-        embeddings = _embed_documents([_embedding_input(chunk) for chunk in chunks])
+        course_label = _course_label(document)
+        embeddings = _embed_documents([_embedding_input(chunk, course_label, document.title) for chunk in chunks])
 
         with transaction.atomic():
             DocumentChunk.objects.bulk_create(
@@ -156,11 +270,16 @@ def _process_document(document: Document) -> None:
                     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
                 ]
             )
+            update_search_vectors(document)
+            sync_disciplinas(document, chunks)
             document.status = Document.Status.READY
             document.processing_error = ""
             document.save(update_fields=["status", "processing_error", "updated_at"])
     except Exception as exc:
-        if isinstance(exc, (extraction.UnsupportedFileTypeError, ProviderConfigurationError)):
+        if isinstance(
+            exc,
+            (extraction.UnsupportedFileTypeError, extraction.OcrUnavailableError, ProviderConfigurationError),
+        ):
             document.processing_error = str(exc)
         elif _is_quota_error(exc):
             logger.error("Cota do provider de embedding esgotada no documento %s: %s", document.id, exc)

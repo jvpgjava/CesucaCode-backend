@@ -1,8 +1,10 @@
-"""Aguarda o Postgres, garante a extensão pgvector e aplica migrações."""
+"""Aguarda o Postgres, garante a extensão pgvector, aplica migrações e reenfileira
+materiais presos em processamento."""
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 
@@ -56,6 +58,18 @@ def main() -> None:
             call_command("seed_materials")
         except Exception as exc:
             print(f"seed_materials não concluído: {exc}", file=sys.stderr)
+
+    # Materiais presos em `processing` (o pool de ingestão vive na memória do processo
+    # e se perde num restart) são reenfileirados. Roda em um subprocesso à parte para
+    # não atrasar o boot do servidor: o execvp abaixo substitui este processo, e o
+    # processamento (lento) precisa de um processo que continue vivo.
+    try:
+        subprocess.Popen(
+            [sys.executable, "manage.py", "recover_documents"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+    except Exception as exc:
+        print(f"recover_documents não iniciado: {exc}", file=sys.stderr)
 
     os.execvp(sys.argv[1], sys.argv[1:])
 

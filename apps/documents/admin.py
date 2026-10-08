@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Document, DocumentChunk
+from .models import Disciplina, Document, DocumentChunk
 
 
 class DocumentChunkInline(admin.TabularInline):
@@ -27,3 +27,10 @@ class DocumentAdmin(admin.ModelAdmin):
     @admin.display(description="Cursos")
     def course_names(self, obj):
         return ", ".join(course.code for course in obj.courses.all())
+
+
+@admin.register(Disciplina)
+class DisciplinaAdmin(admin.ModelAdmin):
+    list_display = ["nome", "semestre", "carga_horaria", "periodo_letivo", "course", "document"]
+    list_filter = ["course", "semestre"]
+    search_fields = ["nome"]

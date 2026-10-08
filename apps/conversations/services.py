@@ -1,15 +1,12 @@
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 from django.conf import settings
-from pgvector.django import CosineDistance
 
 from apps.accounts.models import User
-from apps.ai_providers import services as ai_providers
-from apps.documents.models import DocumentChunk
-from apps.documents.views import get_documents_queryset
 
-from . import web_search
+from . import retrieval
 from .models import Conversation, Message
 
 logger = logging.getLogger(__name__)
@@ -27,12 +24,7 @@ REFUSAL_MESSAGE = (
     "Não consegui processar essa mensagem. Posso ajudar com dúvidas de computação "
     "dos cursos de CC e ADS — pode reformular a pergunta em texto simples?"
 )
-_PROVIDER_REFUSAL_MARKERS = ("content violation", "content_filter", "content filter", "safety")
-
-
-def _is_provider_refusal(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return any(marker in text for marker in _PROVIDER_REFUSAL_MARKERS)
+ERROR_MESSAGE = "Falha ao gerar resposta. Tente novamente."
 
 
 def get_system_prompt() -> str:
@@ -84,23 +76,14 @@ def build_suggestions() -> list[str]:
 
 
 def get_accessible_chunks_queryset(user):
-    return DocumentChunk.objects.filter(
-        document__in=get_documents_queryset(user),
-        document__status="ready",
-        embedding__isnull=False,
-    ).select_related("document")
+    """Mantido por compatibilidade; a implementação vive em retrieval.py."""
+    return retrieval.get_accessible_chunks_queryset(user)
 
 
 def retrieve_context(user, query_text, top_k=TOP_K_CHUNKS, max_distance=None):
-    max_distance = settings.RAG_MAX_DISTANCE if max_distance is None else max_distance
-    query_vector = ai_providers.get_embedding_model().embed_query(query_text)
-    ai_providers.validate_embedding_dimensions(query_vector)
-    return list(
-        get_accessible_chunks_queryset(user)
-        .annotate(distance=CosineDistance("embedding", query_vector))
-        .filter(distance__lte=max_distance)
-        .order_by("distance")[:top_k]
-    )
+    """Pipeline legacy: delega à busca híbrida (retrieval.search). Devolve
+    `RetrievedChunk` (com `.id`, `.distance`, `.heading`, `.content`)."""
+    return retrieval.search(user, query_text, top_k=top_k, max_distance=max_distance)
 
 
 def build_search_text(conversation: Conversation, user_text: str) -> str:
@@ -119,19 +102,20 @@ def build_search_text(conversation: Conversation, user_text: str) -> str:
 
 
 def build_context_block(chunks) -> str:
+    """Monta o contexto com referências opacas: "[T1 · seção: <título da seção>]".
+    O título do documento NUNCA entra no prompt (o modelo não tem o que vazar);
+    a referência existe só pra ele se orientar e não deve ser citada."""
     if not chunks:
         return ""
-    parts = [f"[Origem: {chunk.document.title}]\n{chunk.content}" for chunk in chunks]
-    return "\n\n---\n\n".join(parts)
+    return retrieval.format_context([(f"T{i}", chunk) for i, chunk in enumerate(chunks, 1)])
 
 
-def build_messages(conversation: Conversation, user_text: str, context_block: str, web_block: str = ""):
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+def history_messages(history: list[Message]) -> list:
+    """Histórico (anterior à mensagem atual) no formato do LangChain, já filtrado:
+    sem pares pergunta+recusa do provedor, limitado a `CHAT_MAX_HISTORY_MESSAGES` e
+    começando sempre por uma mensagem do usuário."""
+    from langchain_core.messages import AIMessage, HumanMessage
 
-    system_text = f"{get_system_prompt()}\n\n{build_user_profile_block(conversation.user)}"
-    messages = [SystemMessage(content=system_text)]
-
-    history = list(conversation.messages.all())
     skip = set()
     for i, past in enumerate(history[:-1]):
         nxt = history[i + 1]
@@ -145,13 +129,15 @@ def build_messages(conversation: Conversation, user_text: str, context_block: st
     kept = [m for m in history if m.id not in skip][-settings.CHAT_MAX_HISTORY_MESSAGES :]
     if kept and kept[0].role == Message.Role.ASSISTANT:
         kept = kept[1:]
+    return [
+        HumanMessage(content=past.content) if past.role == Message.Role.USER else AIMessage(content=past.content)
+        for past in kept
+    ]
 
-    for past in kept:
-        if past.role == Message.Role.USER:
-            messages.append(HumanMessage(content=past.content))
-        else:
-            messages.append(AIMessage(content=past.content))
 
+def compose_question(user_text: str, context_block: str, web_block: str = "", notes: tuple[str, ...] = ()) -> str:
+    """Último turno do usuário: contexto (ou aviso de que não há) + referências
+    externas + pergunta + `notes` (instruções extras do pipeline, ao final)."""
     if context_block:
         sections = [f"Contexto dos materiais didáticos:\n\n{context_block}"]
     elif settings.CHAT_ALLOW_GENERAL_KNOWLEDGE:
@@ -166,59 +152,70 @@ def build_messages(conversation: Conversation, user_text: str, context_block: st
     if web_block:
         sections.append(web_block)
     sections.append(f"Pergunta: {user_text}")
+    sections.extend(notes)
+    return "\n\n---\n\n".join(sections)
 
-    messages.append(HumanMessage(content="\n\n---\n\n".join(sections)))
-    return messages
+
+def build_messages(
+    conversation: Conversation,
+    user_text: str,
+    context_block: str,
+    web_block: str = "",
+    history: list[Message] | None = None,
+    *,
+    system_text: str | None = None,
+    notes: tuple[str, ...] = (),
+):
+    """Mensagens para o LLM: system (prompt + perfil) + histórico + pergunta com contexto.
+
+    `history` permite informar o histórico já lido (anterior à mensagem atual); sem
+    ele, usa todas as mensagens salvas. `system_text` substitui o prompt completo
+    (o pipeline passa o prompt por rota, já com o bloco de perfil)."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    if system_text is None:
+        system_text = f"{get_system_prompt()}\n\n{build_user_profile_block(conversation.user)}"
+    history = list(conversation.messages.all()) if history is None else history
+    return [
+        SystemMessage(content=system_text),
+        *history_messages(history),
+        HumanMessage(content=compose_question(user_text, context_block, web_block, notes)),
+    ]
 
 
-def send_message(conversation: Conversation, user_text: str):
-    search_text = build_search_text(conversation, user_text)
-    # Em pergunta de grade/disciplinas a resposta precisa do conjunto todo (a grade
-    # se espalha por vários trechos, todos perto do limite de relevância), então
-    # busca mais trechos e aceita uma distância um pouco maior.
-    curriculum = web_search.is_curriculum_question(search_text)
-    context_chunks = retrieve_context(
-        conversation.user,
-        search_text,
-        top_k=CURRICULUM_TOP_K_CHUNKS if curriculum else TOP_K_CHUNKS,
-        max_distance=settings.RAG_MAX_DISTANCE + (CURRICULUM_EXTRA_DISTANCE if curriculum else 0),
-    )
-    context_block = build_context_block(context_chunks)
-    # Referências externas (pesquisa na web) só em perguntas de grade/disciplinas
-    # e não no modo estrito, que restringe a resposta ao que a instituição enviou.
-    web_block = (
-        web_search.build_web_block(conversation.user, search_text)
-        if settings.CHAT_ALLOW_GENERAL_KNOWLEDGE
-        else ""
-    )
-    messages = build_messages(conversation, user_text, context_block, web_block)
+def _text_of(content) -> str:
+    """Texto de um chunk do LLM. Alguns providers devolvem uma lista de blocos
+    (`{"type": "text", "text": ...}`) em vez de string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) and block.get("type") == "text" else block
+            for block in content
+            if isinstance(block, (str, dict))
+        )
+    return ""
 
-    Message.objects.create(conversation=conversation, role=Message.Role.USER, content=user_text)
-    if not conversation.title:
-        conversation.title = user_text[:80]
-    conversation.save(update_fields=["title", "updated_at"])
 
-    chat_model = ai_providers.get_chat_model()
-    full_response = []
-    try:
-        try:
-            for chunk in chat_model.stream(messages):
-                piece = chunk.content
-                if piece:
-                    full_response.append(piece)
-                    yield piece
-        except Exception as exc:
-            if full_response or not _is_provider_refusal(exc):
-                raise
-            logger.warning("Provedor recusou a mensagem da conversa %s: %s", conversation.id, exc)
+def delete_last_exchange(conversation: Conversation) -> None:
+    """Regenerar: apaga a última resposta do assistente e a pergunta que a gerou
+    (só se estiverem no fim da conversa, nessa ordem). Se a conversa terminar numa
+    pergunta sem resposta (falha anterior), apaga só ela."""
+    last = conversation.messages.order_by("-id").first()
+    if last is None:
+        return
+    to_delete = [last.id]
+    if last.role == Message.Role.ASSISTANT:
+        previous = conversation.messages.filter(id__lt=last.id).order_by("-id").first()
+        if previous is not None and previous.role == Message.Role.USER:
+            to_delete.append(previous.id)
+    conversation.messages.filter(id__in=to_delete).delete()
 
-        if not full_response:
-            full_response.append(REFUSAL_MESSAGE)
-            yield REFUSAL_MESSAGE
-    finally:
-        if full_response:
-            Message.objects.create(
-                conversation=conversation,
-                role=Message.Role.ASSISTANT,
-                content="".join(full_response),
-            )
+
+def send_message(conversation: Conversation, user_text: str, *, regenerate: bool = False) -> Iterator:
+    """Processa uma mensagem do usuário e emite eventos tipados (ver events.py):
+    status... -> meta -> status... -> tokens... -> suggestions -> done (ou error).
+    A orquestração (roteamento, retrieval, agente, guarda, trace) vive em `pipeline`."""
+    from . import pipeline  # import tardio: o pipeline usa helpers deste módulo
+
+    return pipeline.run(conversation, user_text, regenerate=regenerate)

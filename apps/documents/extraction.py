@@ -23,41 +23,55 @@ def get_extension(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower()
 
 
-_converter: DocumentConverter | None = None
+class OcrUnavailableError(Exception):
+    """O PDF não tem texto extraível e o OCR não pôde rodar (engine ausente, modelos
+    não baixados, falha na execução)."""
+
+
+# Dois conversores, criados sob demanda: o padrão (sem OCR) e o com OCR, que só
+# existe se algum PDF vier sem texto (escaneado) — OCR custa minutos por documento.
+_converters: dict[bool, DocumentConverter] = {}
 _converter_lock = threading.Lock()
 
 
-def _get_converter() -> DocumentConverter:
-    global _converter
-    if _converter is None:
+def _get_converter(ocr: bool = False) -> DocumentConverter:
+    if ocr not in _converters:
         # Lock só protege a construção (chamada uma vez); o pool de
         # processamento tem várias threads e a primeira requisição de cada
         # uma poderia disparar a inicialização em paralelo sem isso.
         with _converter_lock:
-            if _converter is None:
-                # Materiais didáticos são PDFs de verdade (texto nativo), não
-                # escaneados — OCR custa a maior parte do tempo de
-                # processamento (~150-240s -> ~40s sem ele num PDF real de
-                # teste) sem trazer nada pra esse caso. Se algum dia entrar
-                # PDF escaneado de verdade, isso falha com uma mensagem clara
-                # ("pode ser uma imagem escaneada sem OCR") em vez de
-                # silenciosamente demorar minutos à toa.
-                pdf_options = PdfPipelineOptions(do_ocr=False)
+            if ocr not in _converters:
+                # Materiais didáticos costumam ser PDFs de texto nativo; OCR custa a
+                # maior parte do tempo de processamento (~150-240s -> ~40s sem ele
+                # num PDF real de teste). Por isso o padrão é sem OCR, e o OCR entra
+                # como fallback (ver services._extract_chunks) quando a extração
+                # vem vazia — o caso de PDFs escaneados, como o Código Disciplinar.
+                pdf_options = PdfPipelineOptions(do_ocr=ocr)
                 pdf_options.table_structure_options.mode = TableFormerMode.FAST
-                _converter = DocumentConverter(
+                _converters[ocr] = DocumentConverter(
                     format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)}
                 )
-    return _converter
+    return _converters[ocr]
 
 
-def convert_document(file, filename: str) -> DoclingDocument:
+def convert_document(file, filename: str, *, ocr: bool = False) -> DoclingDocument:
+    """`file` pode ser um arquivo aberto ou os bytes já lidos (permite reconverter
+    o mesmo PDF com OCR sem reabrir o arquivo)."""
     ext = get_extension(filename)
     if ext not in DOCLING_EXTENSIONS:
         raise UnsupportedFileTypeError(f"Formato .{ext} não suportado.")
 
-    stream = DocumentStream(name=filename, stream=io.BytesIO(file.read()))
-    result = _get_converter().convert(stream)
-    return result.document
+    data = file if isinstance(file, (bytes, bytearray)) else file.read()
+    stream = DocumentStream(name=filename, stream=io.BytesIO(data))
+    if not ocr:
+        return _get_converter(False).convert(stream).document
+    try:
+        return _get_converter(True).convert(stream).document
+    except Exception as exc:
+        raise OcrUnavailableError(
+            "O PDF parece ser uma imagem escaneada e o OCR não está disponível ou falhou "
+            f"neste servidor ({type(exc).__name__}). Envie uma versão com texto selecionável."
+        ) from exc
 
 
 def extract_txt(file) -> str:

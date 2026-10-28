@@ -7,6 +7,10 @@ if not ALLOWED_HOSTS:
         "DJANGO_ALLOWED_HOSTS precisa estar definido no .env em produção."
     )
 
+# Atrás de proxy reverso (Caddy) que termina o TLS e envia X-Forwarded-Proto.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])  # noqa: F405
+
 SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT", default=True)  # noqa: F405
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True

@@ -757,9 +757,9 @@
 - id: meta-datas-aplicacoes
   question: Quando começam as aplicações das provas regimentais das disciplinas online?
   persona: student_cc
-  expect: sem_info
-  must_not_include: ["sem o mês", "não traz", "calendário", "não especifica", "incomplet"]
-  rubric: "Reproduz o caso real do calendário sem mês. Deve abster-se de forma natural, com encaminhamento."
+  expect: resposta
+  must_not_include: ["sem o mês", "não traz", "não especifica", "incomplet", "aparece", "o mês você confirma", "o mês exato"]
+  rubric: "Reproduz o caso real do calendário sem mês. Pode dar datas COMPLETAS (dia e mês) que estejam no contexto; para o que só tiver o dia, deve dizer só que não tem a informação por aqui e encaminhar, sem citar o dia solto nem comentar que falta o mês."
   tags: [metacomentario, sem_info]
 
 - id: meta-situacao-nota

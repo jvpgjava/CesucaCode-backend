@@ -61,8 +61,8 @@ _FINAL_INSTRUCTION_BASE = "Responda à pergunta com base no contexto acima. As r
 # do prompt base), senão o aluno recebe uma recusa onde bastava explicar.
 _INSTITUTIONAL_RULE = (
     "Fatos da instituição ou do curso (datas, notas, regras, disciplinas, horários, professores, "
-    "coordenação) só valem se estiverem explícitos no contexto: se faltarem, diga que não tem essa "
-    "informação confirmada e sugira falar com o professor ou a coordenação, sem inventar."
+    "coordenação) só valem se estiverem explícitos no contexto: se faltarem, diga \"Não tenho essa "
+    "informação por aqui.\" e indique a quem perguntar, sem inventar e sem explicar o motivo."
 )
 _TECHNICAL_RULE = (
     "Conceitos técnicos de computação você PODE e DEVE explicar: use o contexto quando ele ajudar e, "
@@ -167,16 +167,16 @@ def _final_instruction(intent: str | None, *, allow_general: bool) -> str:
 
 
 def _final_messages(
-    system, history, question, registry, web_blocks, *, interrupted: bool, intent: str | None = None
+    system, history, question, registry, web_blocks, *, interrupted: bool, intent: str | None = None, note=None
 ) -> list[BaseMessage]:
     from . import retrieval
 
     pairs = _registry_pairs(registry)
     sections = []
     if pairs:
-        sections.append(f"Contexto coletado:\n\n{retrieval.format_context(pairs)}")
+        sections.append(f"Informações de referência:\n\n{retrieval.format_context(pairs)}")
     else:
-        sections.append(f"Contexto coletado:\n\n{_NO_CONTEXT}")
+        sections.append(f"Informações de referência:\n\n{_NO_CONTEXT}")
     sections.extend(web_blocks)
     sections.append(f"Pergunta: {question}")
     allow_general = bool(getattr(settings, "CHAT_ALLOW_GENERAL_KNOWLEDGE", True))
@@ -186,6 +186,8 @@ def _final_messages(
     if not allow_general and not pairs:
         instruction = f"{instruction} {_STRICT_NOTE}"
     sections.append(instruction)
+    if note:
+        sections.append(note)
 
     final = [SystemMessage(content=system)] if system else []
     return [*final, *history, HumanMessage(content="\n\n---\n\n".join(sections))]
@@ -223,12 +225,16 @@ def run_agent(
     budget: AgentBudget | None = None,
     recorder=None,
     intent: str | None = None,
+    sufficiency_note=None,
 ) -> Iterator[StatusEvent | TokenEvent]:
     """Pesquisa com ferramentas e depois gera a resposta em streaming. `intent` (do
     roteador) calibra a instrução final: abstenção em fato institucional, explicação
     em conteúdo técnico.
 
     `messages`: SystemMessage(s) + histórico + HumanMessage com a pergunta (pura).
+    `sufficiency_note(pergunta, contexto) -> str | None`: checagem de suficiência do
+    pipeline, chamada antes da resposta final em perguntas institucionais; a nota que
+    ela devolver entra na instrução final (abstenção sem explicar o motivo).
     Levanta `AgentUnavailable` já na chamada se o modelo não suporta tools."""
     budget = budget or budget_from_settings()
     try:
@@ -257,10 +263,13 @@ def run_agent(
         tools={tool.name: tool for tool in tools},
         agent_model=agent_model,
         intent=intent,
+        sufficiency_note=sufficiency_note,
     )
 
 
-def _run(*, messages, registry, budget, recorder, tools, agent_model, intent=None) -> Iterator[StatusEvent | TokenEvent]:
+def _run(
+    *, messages, registry, budget, recorder, tools, agent_model, intent=None, sufficiency_note=None
+) -> Iterator[StatusEvent | TokenEvent]:
     system, history, question = _split_messages(messages)
     agent_system = f"{system}\n\n{AGENT_PROMPT}" if system else AGENT_PROMPT
     loop_messages: list[BaseMessage] = [SystemMessage(content=agent_system), *history, HumanMessage(content=question)]
@@ -349,8 +358,17 @@ def _run(*, messages, registry, budget, recorder, tools, agent_model, intent=Non
     if recorder is not None:
         recorder.set(chunk_ids=list(registry.chunk_ids))
 
+    note = None
+    pairs = _registry_pairs(registry)
+    if sufficiency_note is not None and pairs and intent in _INSTITUTIONAL_INTENTS:
+        from . import retrieval
+
+        yield from gate.emit("checking")
+        note = sufficiency_note(question, retrieval.format_context(pairs))
     yield from gate.emit("writing")
-    final_messages = _final_messages(system, history, question, registry, web_blocks, interrupted=interrupted, intent=intent)
+    final_messages = _final_messages(
+        system, history, question, registry, web_blocks, interrupted=interrupted, intent=intent, note=note
+    )
     answer_model = ai_providers.get_chat_model("answer")
     with recorder_step(recorder, "llm", "answer_stream"):
         for chunk in answer_model.stream(final_messages):

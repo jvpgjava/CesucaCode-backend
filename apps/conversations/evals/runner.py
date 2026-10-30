@@ -266,13 +266,16 @@ def run_case(case, *, judge: bool = False, titles=(), send=None) -> dict:
     }
 
 
-def run_cases(cases, *, judge: bool = False, send=None, progress=None) -> list[dict]:
-    """Roda os casos em sequência. `progress(i, total, resultado)` é chamado a cada caso."""
+def run_cases(cases, *, judge: bool = False, send=None, progress=None, repeat: int = 1) -> list[dict]:
+    """Roda os casos em sequência, cada um `repeat` vezes (para o pass^k). `progress(i,
+    total, resultado)` é chamado a cada execução; cada resultado leva o número da `trial`."""
     titles = document_titles()
+    runs = [(case, trial) for case in cases for trial in range(1, max(1, repeat) + 1)]
     results = []
-    for index, case in enumerate(cases, start=1):
+    for index, (case, trial) in enumerate(runs, start=1):
         result = run_case(case, judge=judge, titles=titles, send=send)
+        result["trial"] = trial
         results.append(result)
         if progress:
-            progress(index, len(cases), result)
+            progress(index, len(runs), result)
     return results

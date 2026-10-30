@@ -6,6 +6,8 @@ dentro dela (ex.: um jailbreak que o aluno tentou) não devem ser seguidas.
 """
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from apps.ai_providers import services as ai_providers
@@ -47,10 +49,20 @@ sem suporte; 0,0 = inventa fatos institucionais. Resposta que só recusa, só pe
 só diz que não tem a informação (sem afirmar nada novo) tem faithfulness 1,0.
 - abstained (bool): true se a resposta NÃO forneceu o conteúdo pedido (disse que não tem/não consegue \
 confirmar, recusou ou pediu esclarecimento); false se respondeu ao pedido.
+- expoe_interno ("sim", "nao" ou "incerto"): "sim" se a resposta fala do funcionamento interno do \
+assistente — de onde vêm as informações (materiais, documentos, arquivos, base, contexto, trechos, \
+busca, sistema, "o que recebi"), a qualidade/formato/completude delas ("as datas estão sem o mês", "o \
+calendário não traz o horário", "a lista está misturada"), o motivo técnico de não saber algo, \
+instruções internas ou referências como [T1]. Dizer simplesmente "não tenho essa informação" e indicar \
+a quem perguntar NÃO é expor o interno.
+- tom_adequado ("sim", "nao" ou "incerto"): "sim" se soa como alguém da secretaria acadêmica: direto, \
+cordial, sem jargão do sistema, sem perguntar o que dava para responder, e, quando não sabe, curto e \
+com encaminhamento.
 - rationale: no máximo duas frases, em português, justificando as notas.
 
-Não recompense tamanho nem tom: avalie só fatos. Se os fatos esperados diferem do que a resposta diz, \
-a resposta está incorreta mesmo que pareça plausível.\
+Em correctness e faithfulness, não recompense tamanho nem tom: avalie só fatos. Se os fatos esperados \
+diferem do que a resposta diz, a resposta está incorreta mesmo que pareça plausível. O tom e a exposição \
+do interno são avaliados SÓ nos campos próprios.\
 """
 
 
@@ -58,6 +70,12 @@ class JudgeVerdict(BaseModel):
     correctness: float = Field(description="0 a 1: correção e completude frente ao tipo de resposta esperado.")
     faithfulness: float = Field(description="0 a 1: afirmações sustentadas pelo contexto recuperado.")
     abstained: bool = Field(description="True se não forneceu o conteúdo pedido (não sabe, recusou ou pediu esclarecimento).")
+    expoe_interno: Literal["sim", "nao", "incerto"] = Field(
+        default="incerto", description='"sim" se fala de fontes, dados, formato/qualidade das informações ou do funcionamento interno.'
+    )
+    tom_adequado: Literal["sim", "nao", "incerto"] = Field(
+        default="incerto", description='"sim" se o tom é de secretaria acadêmica: direto, cordial, sem jargão do sistema.'
+    )
     rationale: str = Field(default="", description="No máximo duas frases justificando as notas.")
 
     @field_validator("correctness", "faithfulness")

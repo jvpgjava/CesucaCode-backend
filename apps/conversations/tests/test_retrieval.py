@@ -297,11 +297,24 @@ def test_documento_pequeno_traz_os_chunks_irmaos_na_ordem(student, course, admin
     """Cronograma partido em 2 chunks: só o da A2 casa com a busca, mas a A1 vem junto."""
     cronograma = make_doc(
         admin, "Cronograma", [course],
-        [("Crono", "| 9 | 30/09 | Avaliação A1 |", vec(0.0, 1.0)), ("Crono", "| 17 | 25/11 | prova A2 |", vec(1.0))],
+        [
+            ("Crono", "| 9 | 30/09 | Avaliação A1 |", vec(1.0, 0.3)),  # perto, mas sem a palavra "prova"
+            ("Crono", "| 17 | 25/11 | prova A2 |", vec(1.0)),
+        ],
     )  # fmt: skip
-    result = retrieval.search(student, "prova")
+    # top_k=1: só o chunk da A2 (casa nas duas buscas) passa; o da A1 vem como irmão.
+    result = retrieval.search(student, "prova", top_k=1)
     conteudos = [c.content for c in result if c.document_id == cronograma.id]
     assert conteudos == ["| 17 | 25/11 | prova A2 |", "| 9 | 30/09 | Avaliação A1 |"]
+
+
+def test_irmao_distante_nao_entra(student, course, admin, embed):
+    cronograma = make_doc(
+        admin, "Cronograma", [course],
+        [("Crono", "assunto sem relação", vec(0.0, 1.0)), ("Crono", "| 17 | 25/11 | prova A2 |", vec(1.0))],
+    )  # fmt: skip
+    result = retrieval.search(student, "prova")
+    assert [c.content for c in result if c.document_id == cronograma.id] == ["| 17 | 25/11 | prova A2 |"]
 
 
 def test_documento_grande_nao_traz_irmaos(student, course, admin, embed):

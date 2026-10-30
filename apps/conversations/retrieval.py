@@ -263,13 +263,20 @@ def search(
     ranked = [_to_chunk(rows_by_id[i], score=scores[i]) for i in sorted(scores, key=sort_key)]
     if settings.RAG_RERANK_ENABLED:
         ranked = rerank(query, ranked)
-    return _with_small_document_siblings(queryset, ranked[:top_k])
+    return _with_small_document_siblings(queryset, ranked[:top_k], query_vector, max_distance)
 
 
-def _with_small_document_siblings(queryset, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+def _with_small_document_siblings(
+    queryset, chunks: list[RetrievedChunk], query_vector, max_distance: float
+) -> list[RetrievedChunk]:
     """Acrescenta, logo depois do primeiro chunk de cada documento pequeno (até
     `SMALL_DOCUMENT_MAX_CHUNKS`), os irmãos que ficaram de fora, na ordem do documento.
-    Herdam o score do chunk que os trouxe. Documentos grandes não mudam."""
+    Só entram irmãos dentro do corte de distância (`max_distance`): um trecho
+    semanticamente distante continua fora, como na busca normal. Sem o vetor da
+    consulta (falha no embedding), não há expansão. Herdam o score do chunk que os
+    trouxe. Documentos grandes não mudam."""
+    if query_vector is None:
+        return chunks
     if not chunks:
         return chunks
     present = {chunk.chunk_id for chunk in chunks}
@@ -284,7 +291,15 @@ def _with_small_document_siblings(queryset, chunks: list[RetrievedChunk]) -> lis
     if not small:
         return chunks
     siblings: dict[int, list[dict]] = {}
-    for row in queryset.filter(document_id__in=small).exclude(id__in=present).order_by("index").values(*_FIELDS):
+    candidates = (
+        queryset.filter(document_id__in=small)
+        .exclude(id__in=present)
+        .annotate(distance=CosineDistance("embedding", query_vector))
+        .filter(distance__lte=max_distance)
+        .order_by("index")
+        .values(*_FIELDS, "distance")
+    )
+    for row in candidates:
         siblings.setdefault(row["document_id"], []).append(row)
 
     result: list[RetrievedChunk] = []

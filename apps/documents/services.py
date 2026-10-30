@@ -1,6 +1,8 @@
 import logging
+import re
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from datetime import timedelta
@@ -26,6 +28,29 @@ logger = logging.getLogger(__name__)
 # uso tão baixo quanto o desse app.
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="doc-processor")
 
+# Mensagens das etapas, mostradas na tela de materiais enquanto o status é `processing`.
+QUEUED_DETAIL = "Na fila para processamento…"
+EXTRACTING_DETAIL = "Lendo o arquivo e identificando seções e tabelas…"
+EMBEDDING_DETAIL = "Indexando o conteúdo: {done} de {total} trechos…"
+QUOTA_WAIT_DETAIL = (
+    "Aguardando o serviço externo de indexação (limite de uso por minuto atingido). "
+    "O processamento continua sozinho, não é preciso fazer nada."
+)
+SAVING_DETAIL = "Salvando…"
+# Faixas do progresso: a extração é rápida e a indexação (com as esperas) domina.
+EXTRACTION_PROGRESS = 10
+EMBEDDING_PROGRESS_END = 95
+
+
+def _set_progress(document: Document, detail: str, progress: int | None = None, resume_at=None) -> None:
+    """Grava etapa/progresso direto no banco (sem `save()` do objeto inteiro, que a
+    thread de processamento ainda está usando). Renova `updated_at`: uma espera longa
+    pela cota não pode parecer documento travado para `recover_stuck_documents`."""
+    fields = {"processing_detail": detail[:255], "processing_resume_at": resume_at, "updated_at": timezone.now()}
+    if progress is not None:
+        fields["processing_progress"] = max(0, min(100, progress))
+    Document.objects.filter(pk=document.pk).update(**fields)
+
 
 def create_document(*, title, courses, file, uploaded_by) -> Document:
     document = Document.objects.create(
@@ -33,6 +58,7 @@ def create_document(*, title, courses, file, uploaded_by) -> Document:
         file=file,
         uploaded_by=uploaded_by,
         status=Document.Status.PROCESSING,
+        processing_detail=QUEUED_DETAIL,
     )
     document.courses.set(courses)
     _executor.submit(_process_document_in_background, document.id)
@@ -44,7 +70,15 @@ def reprocess_document(document: Document) -> Document:
     document.disciplinas.all().delete()
     document.status = Document.Status.PROCESSING
     document.processing_error = ""
-    document.save(update_fields=["status", "processing_error", "updated_at"])
+    document.processing_detail = QUEUED_DETAIL
+    document.processing_progress = 0
+    document.processing_resume_at = None
+    document.save(
+        update_fields=[
+            "status", "processing_error", "processing_detail", "processing_progress",
+            "processing_resume_at", "updated_at",
+        ]
+    )  # fmt: skip
     _executor.submit(_process_document_in_background, document.id)
     return document
 
@@ -192,36 +226,97 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(marker in text for marker in _TRANSIENT_MARKERS)
 
 
-def _embed_batch_with_retry(model, batch: list[str]) -> list[list[float]]:
-    """`embed_documents` com backoff exponencial (EMBEDDING_RETRY_BASE_SECONDS, dobra a
-    cada tentativa) só para erros transitórios. Erros permanentes sobem na hora; se
-    as tentativas acabarem, sobe o último erro (tratado em _process_document)."""
+class DailyQuotaExceededError(Exception):
+    """Cota DIÁRIA do provider de embedding esgotada: esperar minutos não resolve."""
+
+
+_RETRY_IN_RE = re.compile(r"retry in\s+([\d.]+)\s*s", re.IGNORECASE)
+_RETRY_DELAY_RE = re.compile(r"retryDelay['\"]?\s*[:=]\s*['\"]?([\d.]+)s", re.IGNORECASE)
+_DAILY_QUOTA_MARKERS = ("perday", "per day", "requests per day", "daily")
+QUOTA_WAIT_FALLBACK_SECONDS = 30.0
+QUOTA_WAIT_MARGIN_SECONDS = 2.0
+
+
+def _is_daily_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return _is_quota_error(exc) and any(marker in text for marker in _DAILY_QUOTA_MARKERS)
+
+
+def _quota_retry_seconds(exc: Exception) -> float:
+    """Quanto esperar antes de tentar de novo, pelo que o provider indicou no erro
+    ("Please retry in 24.5s" / retryDelay '24s'); sem indicação, 30s."""
+    text = str(exc)
+    for pattern in (_RETRY_IN_RE, _RETRY_DELAY_RE):
+        match = pattern.search(text)
+        if match:
+            return float(match.group(1)) + QUOTA_WAIT_MARGIN_SECONDS
+    return QUOTA_WAIT_FALLBACK_SECONDS
+
+
+OnWait = Callable[[float], None]
+
+
+def _embed_batch_with_retry(model, batch: list[str], on_wait: OnWait | None = None) -> list[list[float]]:
+    """`embed_documents` resiliente a limites do provider.
+
+    - Cota por minuto esgotada (429): espera o tempo que o provider indica e tenta de
+      novo, quantas vezes for preciso, até `EMBEDDING_QUOTA_MAX_WAIT_SECONDS` de espera
+      somada. É o que permite indexar um material grande no plano gratuito.
+    - Cota diária esgotada: `DailyQuotaExceededError` na hora.
+    - Outros erros transitórios (timeout, rede, 5xx): backoff exponencial curto
+      (`EMBEDDING_RETRY_ATTEMPTS`, `EMBEDDING_RETRY_BASE_SECONDS`).
+    - Erros permanentes sobem na hora (tratados em _process_document).
+    `on_wait(segundos)` é chamado antes de cada espera pela cota (aviso na tela)."""
     attempts = max(1, settings.EMBEDDING_RETRY_ATTEMPTS)
-    for attempt in range(attempts):
+    transient_failures = 0
+    waited = 0.0
+    while True:
         try:
             return model.embed_documents(batch)
         except Exception as exc:
-            if attempt == attempts - 1 or not _is_transient_error(exc):
+            if _is_quota_error(exc):
+                if _is_daily_quota_error(exc):
+                    raise DailyQuotaExceededError(str(exc)) from exc
+                delay = _quota_retry_seconds(exc)
+                if waited + delay > settings.EMBEDDING_QUOTA_MAX_WAIT_SECONDS:
+                    raise
+                logger.warning("Cota de embedding por minuto atingida; aguardando %.0fs.", delay)
+                if on_wait is not None:
+                    on_wait(delay)
+                time.sleep(delay)
+                waited += delay
+                continue
+            transient_failures += 1
+            if transient_failures >= attempts or not _is_transient_error(exc):
                 raise
-            delay = settings.EMBEDDING_RETRY_BASE_SECONDS * (2**attempt)
+            delay = settings.EMBEDDING_RETRY_BASE_SECONDS * (2 ** (transient_failures - 1))
             logger.warning(
                 "Embedding falhou (%s); tentativa %d/%d, nova tentativa em %.0fs.",
-                type(exc).__name__, attempt + 1, attempts, delay,
+                type(exc).__name__, transient_failures, attempts, delay,
             )  # fmt: skip
             time.sleep(delay)
-    raise AssertionError("inalcançável")
 
 
-def _embed_documents(texts: list[str]) -> list[list[float]]:
-    """Embeda em lotes (`EMBEDDING_BATCH_SIZE`), espaçados se houver teto configurado
-    e com retry para erros transitórios. Os demais erros do provider sobem normalmente."""
+def _embed_documents(
+    texts: list[str],
+    *,
+    on_progress: Callable[[int, int], None] | None = None,
+    on_wait: OnWait | None = None,
+) -> list[list[float]]:
+    """Embeda em lotes (`EMBEDDING_BATCH_SIZE`), espaçados se houver teto configurado,
+    esperando a cota quando preciso (ver `_embed_batch_with_retry`). `on_progress(feitos,
+    total)` é chamado antes do primeiro lote e depois de cada um."""
     model = ai_providers.get_embedding_model()
     size = settings.EMBEDDING_BATCH_SIZE
     embeddings: list[list[float]] = []
+    if on_progress is not None:
+        on_progress(0, len(texts))
     for start in range(0, len(texts), size):
         batch = texts[start : start + size]
         _embedding_throttle.wait(len(batch))
-        embeddings.extend(_embed_batch_with_retry(model, batch))
+        embeddings.extend(_embed_batch_with_retry(model, batch, on_wait=on_wait))
+        if on_progress is not None:
+            on_progress(len(embeddings), len(texts))
     if embeddings:
         ai_providers.validate_embedding_dimensions(embeddings[0])
     return embeddings
@@ -248,6 +343,7 @@ def sync_disciplinas(document: Document, chunks: list[chunking.Chunk]) -> int:
 
 def _process_document(document: Document) -> None:
     try:
+        _set_progress(document, EXTRACTING_DETAIL, 0)
         document.file.open("rb")
         try:
             chunks = _extract_chunks(document)
@@ -255,7 +351,21 @@ def _process_document(document: Document) -> None:
             document.file.close()
 
         course_label = _course_label(document)
-        embeddings = _embed_documents([_embedding_input(chunk, course_label, document.title) for chunk in chunks])
+        span = EMBEDDING_PROGRESS_END - EXTRACTION_PROGRESS
+
+        def on_progress(done: int, total: int) -> None:
+            progress = EXTRACTION_PROGRESS + (span * done // total if total else span)
+            _set_progress(document, EMBEDDING_DETAIL.format(done=done, total=total), progress)
+
+        def on_wait(seconds: float) -> None:
+            _set_progress(document, QUOTA_WAIT_DETAIL, resume_at=timezone.now() + timedelta(seconds=seconds))
+
+        embeddings = _embed_documents(
+            [_embedding_input(chunk, course_label, document.title) for chunk in chunks],
+            on_progress=on_progress,
+            on_wait=on_wait,
+        )
+        _set_progress(document, SAVING_DETAIL, EMBEDDING_PROGRESS_END)
 
         with transaction.atomic():
             DocumentChunk.objects.bulk_create(
@@ -274,18 +384,32 @@ def _process_document(document: Document) -> None:
             sync_disciplinas(document, chunks)
             document.status = Document.Status.READY
             document.processing_error = ""
-            document.save(update_fields=["status", "processing_error", "updated_at"])
+            document.processing_detail = ""
+            document.processing_progress = 100
+            document.processing_resume_at = None
+            document.save(
+                update_fields=[
+                    "status", "processing_error", "processing_detail", "processing_progress",
+                    "processing_resume_at", "updated_at",
+                ]
+            )  # fmt: skip
     except Exception as exc:
         if isinstance(
             exc,
             (extraction.UnsupportedFileTypeError, extraction.OcrUnavailableError, ProviderConfigurationError),
         ):
             document.processing_error = str(exc)
+        elif isinstance(exc, DailyQuotaExceededError):
+            logger.error("Cota diária do provider de embedding esgotada no documento %s: %s", document.id, exc)
+            document.processing_error = (
+                "O limite diário do serviço externo de indexação foi atingido. Tente "
+                "Reprocessar amanhã (ou configure um plano/provider com mais cota)."
+            )
         elif _is_quota_error(exc):
             logger.error("Cota do provider de embedding esgotada no documento %s: %s", document.id, exc)
             document.processing_error = (
-                "A cota do provider de embedding foi esgotada. Aguarde a renovação "
-                "da cota (ou use outro plano/provider) e clique em Reprocessar."
+                "O serviço externo de indexação ficou indisponível por limite de uso por "
+                "tempo demais. Aguarde alguns minutos e clique em Reprocessar."
             )
         else:
             logger.exception("Falha ao processar o documento %s", document.id)
@@ -293,4 +417,8 @@ def _process_document(document: Document) -> None:
                 "Falha ao processar o arquivo. Tente reenviar ou contate o suporte."
             )
         document.status = Document.Status.FAILED
-        document.save(update_fields=["status", "processing_error", "updated_at"])
+        document.processing_detail = ""
+        document.processing_resume_at = None
+        document.save(
+            update_fields=["status", "processing_error", "processing_detail", "processing_resume_at", "updated_at"]
+        )

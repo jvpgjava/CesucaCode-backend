@@ -9,7 +9,10 @@ from .permissions import can_delete_document, coordinated_course_ids
 
 MAX_FILE_SIZE_MB = 20
 # Campos de gestão que o estudante não vê no DocumentSerializer.
-STUDENT_HIDDEN_FIELDS = ("file", "uploaded_by_name", "processing_error")
+STUDENT_HIDDEN_FIELDS = (
+    "file", "uploaded_by_name", "processing_error",
+    "processing_detail", "processing_progress", "processing_resume_at",
+)  # fmt: skip
 
 
 class DocumentSerializer(serializers.ModelSerializer):
@@ -22,7 +25,8 @@ class DocumentSerializer(serializers.ModelSerializer):
         model = Document
         fields = [
             "id", "title", "courses", "file", "uploaded_by_name",
-            "status", "processing_error", "chunk_count", "can_delete", "created_at",
+            "status", "processing_error", "processing_detail", "processing_progress",
+            "processing_resume_at", "chunk_count", "can_delete", "created_at",
         ]
         read_only_fields = fields
 

@@ -33,6 +33,12 @@ class Document(TimeStampedModel):
     )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PROCESSING)
     processing_error = models.TextField(blank=True)
+    # Acompanhamento do processamento em background, para a tela de materiais: etapa
+    # atual em texto ("Gerando embeddings: 120 de 482"), progresso 0-100 e, durante uma
+    # espera pela cota do provider, quando o processamento é retomado.
+    processing_detail = models.CharField(max_length=255, blank=True)
+    processing_progress = models.PositiveSmallIntegerField(default=0)
+    processing_resume_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]

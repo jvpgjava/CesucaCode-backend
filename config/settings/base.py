@@ -198,6 +198,10 @@ RAG_CHUNK_MAX_TOKENS = env.int("RAG_CHUNK_MAX_TOKENS", default=300)
 # (429/cota por minuto, timeout, conexão) ao gerar embeddings na ingestão.
 EMBEDDING_RETRY_ATTEMPTS = env.int("EMBEDDING_RETRY_ATTEMPTS", default=3)
 EMBEDDING_RETRY_BASE_SECONDS = env.float("EMBEDDING_RETRY_BASE_SECONDS", default=5.0)
+# Cota por minuto esgotada (429 do plano gratuito): em vez de falhar, o processamento
+# espera o tempo que o provider indica e continua, até este teto total (segundos).
+# Cota diária esgotada falha na hora: esperar minutos não resolve.
+EMBEDDING_QUOTA_MAX_WAIT_SECONDS = env.int("EMBEDDING_QUOTA_MAX_WAIT_SECONDS", default=1800)
 
 # Quantas mensagens anteriores da conversa vão pro modelo a cada turno. Sem teto,
 # conversas longas ficam cada vez mais caras/lentas e estouram o contexto.

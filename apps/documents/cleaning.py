@@ -21,7 +21,7 @@ import unicodedata
 from collections import Counter
 
 from docling_core.types.doc import ContentLayer
-from docling_core.types.doc.document import DoclingDocument, SectionHeaderItem, TextItem
+from docling_core.types.doc.document import DoclingDocument, SectionHeaderItem, TableItem, TextItem
 
 # Marcador de paginação isolado: "2 / 102", "Página 3 de 10", "pág. 4/9".
 PAGINATION_PATTERNS = [
@@ -42,6 +42,9 @@ BOILERPLATE_PATTERNS = [
     re.compile(r"^\W{0,3}(?:https?://)?(?:www\.)?cesuca\.edu\.br\s*\(?\d{2}\)?[\s\d.-]{8,}$", re.IGNORECASE),
     # Linha de credenciamento no rodapé de um quadro: "Credenciado pela Portaria ... DOU ..."
     re.compile(r"^\s*Credenciad[oa]\s+pela\s+Portaria\b.*\bDOU\b.*$", re.IGNORECASE),
+    # Rótulo da legenda de cores dos cronogramas: as cores não são extraídas, então
+    # sozinho ele não diz nada e, como cabeçalho, apagaria o título do documento.
+    re.compile(r"^\s*Legenda\s*:?\s*$", re.IGNORECASE),
 ]
 
 # Bloco de credenciamento: o cabeçalho abre o bloco e as linhas seguintes que casam com
@@ -168,6 +171,18 @@ def mark_boilerplate_items(document: DoclingDocument, *, repeated_footer: bool =
     marked = 0
     for item, drop in zip(items, flags):
         if drop:
+            item.content_layer = ContentLayer.FURNITURE
+            marked += 1
+    return marked
+
+
+def mark_header_only_tables(document: DoclingDocument) -> int:
+    """Move para FURNITURE as tabelas sem linhas de dados (só cabeçalho). É o caso das
+    legendas de cor dos cronogramas ("Feriado | Prova | Trabalho | AF"): sem as cores,
+    que o Docling não extrai, a linha solta só vira ruído no chunk."""
+    marked = 0
+    for item, _ in document.iterate_items():
+        if isinstance(item, TableItem) and item.data.num_rows <= 1:
             item.content_layer = ContentLayer.FURNITURE
             marked += 1
     return marked

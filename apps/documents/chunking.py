@@ -24,7 +24,8 @@ from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
 from docling_core.transforms.serializer.base import BaseDocSerializer, BaseSerializerProvider
 from docling_core.transforms.serializer.markdown import MarkdownParams, MarkdownTableSerializer
 from docling_core.types.doc.base import ImageRefMode
-from docling_core.types.doc.document import DoclingDocument
+from docling_core.types.doc import ContentLayer
+from docling_core.types.doc.document import DoclingDocument, SectionHeaderItem, TextItem, TitleItem
 
 from . import cleaning, disciplinas
 
@@ -32,6 +33,7 @@ DEFAULT_MAX_CHARS = 1500
 DEFAULT_OVERLAP = 200
 
 _TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
+MAX_TITLE_CHARS = 150
 
 
 @dataclass
@@ -128,7 +130,9 @@ def chunk_docling_document(
 
     # Antes do chunker: rodapé/paginação saem do texto e os cabeçalhos de plano de ensino
     # viram fronteira de seção, com o contexto da disciplina por item.
+    title = document_title(document)  # antes da limpeza, que esconde cabeçalhos como "Legenda"
     cleaning.mark_boilerplate_items(document)
+    cleaning.mark_header_only_tables(document)
     contexts = disciplinas.prepare_document(document)
 
     chunks: list[Chunk] = []
@@ -144,9 +148,39 @@ def chunk_docling_document(
             headings = [ctx.nome, *[h for h in headings if h != ctx.header_text and h != ctx.nome]]
             if items and all(i.self_ref in ctx.member_refs for i in items):
                 text = ctx.summary()  # o texto grudado do cabeçalho vira linhas legíveis
+        if title and title not in headings:
+            headings = [title, *headings]
         chunks.append(Chunk(content=text, heading=" > ".join(headings), discipline=ctx))
     return chunks
 
+
+def document_title(document: DoclingDocument) -> str:
+    """Título impresso no documento, que vira a raiz do caminho de seções de TODO chunk.
+
+    Sem isso, num PDF em que o título e as seções são cabeçalhos do mesmo nível
+    (cronogramas: título e "Legenda"), a primeira seção apaga o título da hierarquia e
+    os chunks de documentos parecidos (o cronograma de cada disciplina) ficam
+    indistinguíveis para o LLM. Só conta como título um `TitleItem` ou um cabeçalho
+    que abre o documento seguido direto de outro cabeçalho (bloco de título antes da
+    primeira seção); um cabeçalho seguido de conteúdo é só a primeira seção. É o texto
+    do próprio documento, nunca o nome do arquivo. Só para PDF: em Markdown/DOCX a
+    hierarquia já vem explícita no arquivo."""
+    origin = getattr(document, "origin", None)
+    if origin is None or origin.mimetype != "application/pdf":
+        return ""
+    body = [item for item, _ in document.iterate_items() if item.content_layer == ContentLayer.BODY]
+    # Figuras antes do título (logo da instituição) não contam; texto vazio também não.
+    while body and (not isinstance(body[0], TextItem) or not body[0].text.strip()):
+        body.pop(0)
+    if not body or not isinstance(body[0], (TitleItem, SectionHeaderItem)):
+        return ""
+    title = " ".join(body[0].text.split())
+    if len(title) > MAX_TITLE_CHARS:
+        return ""
+    if isinstance(body[0], TitleItem):
+        return title
+    following = body[1] if len(body) > 1 else None
+    return title if isinstance(following, SectionHeaderItem) else ""
 
 def _split_long_text(text: str, max_chars: int, overlap: int) -> list[str]:
     step = max(max_chars - overlap, 1)

@@ -10,6 +10,7 @@ são ingeridos: servem de referência e para regerar o `.md` se preciso.
 | `manual.md` | `originals/manual.pdf` | exportação do Docling |
 | `horario-cc-2026-2.md` | `originals/horario-cc-2026-2.pdf` | exportação do Docling; a tabela perde a divisão por semestre (o PDF a mantém) |
 | `plano-de-ensino-cc.md` | `originals/plano-de-ensino-cc.pdf` | exportação do Docling |
+| `glossario-academico.md` | — | escrito à mão a partir de `avaliacao.md` e `manual.md`; termos sem regra nos materiais (optativas, horas complementares etc.) só têm definição geral e remetem à coordenação |
 | `codigo-disciplinar-interno.md` | `originals/codigo-disciplinar-interno.pdf` | PDF **escaneado**: gerado uma única vez com Docling + OCR (`do_ocr=True`, ~4 min), marcadores `<!-- image -->` removidos. Ruído de OCR na página de assinaturas |
 
 O ingestor roda com OCR desligado, por isso PDFs escaneados precisam virar `.md` antes.

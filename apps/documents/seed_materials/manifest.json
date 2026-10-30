@@ -36,5 +36,13 @@
     "courses": [
       "cc"
     ]
+  },
+  {
+    "file": "glossario-academico.md",
+    "title": "Glossário acadêmico (siglas e termos dos cursos)",
+    "courses": [
+      "cc",
+      "ads"
+    ]
   }
 ]

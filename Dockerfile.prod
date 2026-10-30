@@ -16,9 +16,12 @@ RUN pip install --upgrade pip \
 
 COPY . /app
 
-RUN useradd --system --uid 1000 app \
-    && mkdir -p /app/media /app/staticfiles \
-    && chown -R app:app /app/media /app/staticfiles
+# Home própria: o Docling baixa os modelos de layout/OCR do Hugging Face para
+# ~/.cache na primeira conversão (em produção, montado num volume).
+RUN useradd --system --uid 1000 --create-home app \
+    && mkdir -p /app/media /app/staticfiles /home/app/.cache \
+    && chown -R app:app /app/media /app/staticfiles /home/app/.cache
+ENV HOME=/home/app
 USER app
 
 EXPOSE 8000

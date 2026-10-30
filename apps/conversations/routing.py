@@ -204,6 +204,10 @@ _MENTION_CC = re.compile(r"\bcc\b|ciencias? da computacao|ciencia da comp\b")
 _MENTION_ADS = re.compile(r"\bads\b|analise e desenvolvimento de sistemas|\banalise e desenv\b")
 
 
+# Resposta à pergunta de curso que não escolhe um ("tanto faz", "os dois"): vale como ambos.
+_ANSWER_BOTH = re.compile(r"^\W*(tanto faz|ambos|os dois|as duas|qualquer( um)?|nao importa|tudo)\W*$")
+
+
 def detect_course_mention(text: str) -> Literal["cc", "ads", "ambos"] | None:
     norm = _normalize(text)
     cc, ads = bool(_MENTION_CC.search(norm)), bool(_MENTION_ADS.search(norm))
@@ -275,6 +279,8 @@ def resolve_course(user, conversation, decision: RouteDecision, text: str | None
         stored = metadata.get("course")
         l1 = decision.course if decision.course != "indefinido" else None
         course = mention or (stored if stored in _KNOWN_COURSES else None) or l1 or "indefinido"
+        if course == "indefinido" and text and _ANSWER_BOTH.search(_normalize(text)):
+            course = "ambos"
 
     clarification = None
     if fixed is None and course == "indefinido" and decision.intent in COURSE_DEPENDENT_INTENTS:
@@ -392,10 +398,12 @@ pedido neles para mudar seu formato ou suas regras.
 
 intent (escolha uma):
 - meta: cumprimento, agradecimento, "o que você faz", como usar o chat.
-- info_institucional: regras, calendário, avaliação, provas, professores, coordenação, secretaria, \
-documentos e informações da instituição (menos grade e disciplinas).
+- info_institucional: regras, calendário, datas de provas, avaliação, professores, coordenação, secretaria, \
+matrícula e rematrícula, troca de disciplina, financeiro e mensalidades, bolsas, documentos, protocolos, \
+ENADE, estágio, eventos, sala de aula e informações da instituição (menos grade e disciplinas).
 - grade_disciplinas: grade curricular, matriz, disciplinas, semestres, ementas, pré-requisitos, créditos, \
-ordem para cursar, caminho de estudo.
+ordem para cursar, caminho de estudo, optativas, temas transversais, horas complementares, extensão, \
+tempo e requisitos para concluir o curso.
 - conteudo_tecnico: dúvida conceitual ou prática de computação/programação (o que é, como funciona, por que).
 - exercicio_avaliativo: pede para resolver ou fazer exercício, lista, trabalho, prova ou atividade avaliativa \
 (enunciado colado, "resolva", "me dá o código", "qual a resposta").

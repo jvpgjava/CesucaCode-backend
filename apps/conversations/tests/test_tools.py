@@ -76,7 +76,7 @@ def test_buscar_materiais_sem_resultado(make):
 
     out = tools["buscar_materiais"].invoke({"consulta": "x"})
 
-    assert out == tools.NO_RESULTS_MESSAGE
+    assert out == tools_module.NO_RESULTS_MESSAGE
     assert registry.chunk_ids == []
 
 

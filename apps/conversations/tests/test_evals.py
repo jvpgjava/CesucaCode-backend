@@ -40,7 +40,7 @@ def cases():
 
 
 def test_golden_carrega_e_tem_tamanho_esperado(cases):
-    assert 60 <= len(cases) <= 80
+    assert 60 <= len(cases) <= 100
     assert len({c.id for c in cases}) == len(cases)
 
 

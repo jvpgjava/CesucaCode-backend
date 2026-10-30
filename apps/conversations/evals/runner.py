@@ -50,6 +50,7 @@ VARIANTS = {
         "RAG_HYBRID_ENABLED": False,
         "CHAT_SUFFICIENCY_CHECK_ENABLED": False,
         "CHAT_FOLLOWUPS_ENABLED": False,
+        "CHAT_OUTPUT_GUARD_ENABLED": False,
         "PIPELINE_VERSION": "v0",
     },
     "v1": {
@@ -58,6 +59,7 @@ VARIANTS = {
         "RAG_HYBRID_ENABLED": True,
         "CHAT_SUFFICIENCY_CHECK_ENABLED": True,
         "CHAT_FOLLOWUPS_ENABLED": True,
+        "CHAT_OUTPUT_GUARD_ENABLED": False,
         "PIPELINE_VERSION": "v1",
     },
     "v2": {
@@ -66,6 +68,7 @@ VARIANTS = {
         "RAG_HYBRID_ENABLED": True,
         "CHAT_SUFFICIENCY_CHECK_ENABLED": True,
         "CHAT_FOLLOWUPS_ENABLED": True,
+        "CHAT_OUTPUT_GUARD_ENABLED": False,
         "PIPELINE_VERSION": "v2",
     },
     "current": {},

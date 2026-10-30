@@ -170,6 +170,7 @@ class _Turn:
         self.refused = False  # o provedor se recusou (a resposta é a mensagem padrão)
         self._titles: list[str] | None = None
         self._raw_started = False  # o modelo já mandou algum texto (mesmo que ainda retido na guarda)
+        self._block_flags: list[str] = []  # flags da guarda em blocos (o texto já saiu corrigido)
 
     # --- ciclo do turno ------------------------------------------------------------
 
@@ -460,7 +461,8 @@ class _Turn:
                 self._document_titles(),
                 on_usage=self.recorder.add_usage,
             )
-            self.roles.add("router")
+            if output_guard.judge_enabled():
+                self.roles.add("router")
 
         def release(texts) -> Iterator:
             for text in texts:
@@ -470,12 +472,20 @@ class _Turn:
 
         start = time.monotonic()
         try:
-            for item in items:
-                if not isinstance(item, str):
-                    yield item
-                    continue
-                self._raw_started = True
-                yield from release(g.feed(item) if g is not None else [item])
+            try:
+                for item in items:
+                    if not isinstance(item, str):
+                        yield item
+                        continue
+                    self._raw_started = True
+                    yield from release(g.feed(item) if g is not None else [item])
+            except Exception:
+                # O modelo falhou no meio: o que já estava retido passa pela guarda e
+                # sai (vira o parcial salvo) antes de propagar o erro. Desconexão do
+                # cliente (GeneratorExit) não cai aqui: nada mais é emitido.
+                if g is not None:
+                    yield from release(g.finish())
+                raise
             if g is not None:
                 yield from release(g.finish())
         finally:
@@ -489,6 +499,7 @@ class _Turn:
                 )  # fmt: skip
                 if stats.flags:
                     logger.warning("Guarda em blocos (conversa %s): %s", self.conversation.id, stats.flags)
+                    self._block_flags = list(stats.flags)
 
     def _empty_answer_fallback(self) -> Iterator:
         """Sem texto (recusa do provedor ou resposta vazia): mensagem padrão, que
@@ -559,7 +570,9 @@ class _Turn:
         """Guarda de saída: registra as flags no trace e devolve o texto a salvar
         (sem referências `[T#]` vazadas)."""
         try:
-            flags = guard.check_output(text, document_titles=self._document_titles())
+            # Flags da guarda em blocos (o que foi corrigido antes de sair) + o que ainda
+            # restar no texto final (rede de segurança).
+            flags = [*self._block_flags, *guard.check_output(text, document_titles=self._document_titles())]
             if flags:
                 logger.warning("Guarda de saída (conversa %s): %s", self.conversation.id, flags)
                 self.recorder.set(guard_flags=flags)

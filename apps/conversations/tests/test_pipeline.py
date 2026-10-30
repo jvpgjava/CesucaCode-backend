@@ -276,7 +276,7 @@ def test_rota_pedagogica_usa_escada_de_dicas_sem_suficiencia(conversation, env):
 def fake_agent(monkeypatch, *, pieces=("Resposta ", "do agente."), chunks=(), raises=None, fail_after_call=None):
     calls = []
 
-    def run_agent(*, user, messages, course_code, registry, budget, recorder=None, intent=None):
+    def run_agent(*, user, messages, course_code, registry, budget, recorder=None, intent=None, **kwargs):
         calls.append({"messages": messages, "course_code": course_code, "intent": intent})
         if raises is not None:
             raise raises
@@ -459,8 +459,9 @@ def test_guarda_redige_ref_vazada_e_registra_flag(conversation, env):
 
     events = run(conversation, "Como funciona a avaliação?")
 
-    assert "[T1]" in text_of(events)  # já foi transmitido
+    assert "[T1]" not in text_of(events)  # a guarda em blocos remove antes de transmitir
     answer = conversation.messages.get(role="assistant")
+    assert answer.content == text_of(events)
     assert answer.content == "A média é 7 e a frequência é 75%."
     assert "ref_leak" in answer.trace.guard_flags
 
@@ -492,12 +493,15 @@ def test_erro_do_llm_emite_error_e_nao_done(conversation, env):
 def test_desconexao_do_cliente_salva_texto_parcial(conversation, env):
     env.model = ScriptedChatModel(pieces=["Uma ", "pilha ", "é LIFO."])
     gen = services.send_message(conversation, "Como funciona a avaliação?")
+    shown = ""
     for event in gen:
-        if isinstance(event, TokenEvent) and event.content.startswith("pilha"):
+        if isinstance(event, TokenEvent):
+            shown += event.content
             break
     gen.close()
 
-    assert conversation.messages.get(role="assistant").content == "Uma pilha "
+    # Salva exatamente o que chegou a ser mostrado (os blocos já liberados pela guarda).
+    assert shown and conversation.messages.get(role="assistant").content == shown
 
 
 def test_regenerate_apaga_o_par_anterior(conversation, env):
@@ -528,13 +532,13 @@ def test_trace_preenchido(conversation, env, settings):
         "direta", "info_institucional", "l1", "cc",
     )
     assert trace.models == {"router": "fake-router", "answer": "fake-answer"}
-    # roteador (10/5) + suficiência (10/5) + resposta (100/20) + follow-ups (10/5)
-    assert (trace.input_tokens, trace.output_tokens) == (130, 35)
+    # roteador (10/5) + suficiência (10/5) + resposta (100/20) + juiz da guarda (10/5) + follow-ups (10/5)
+    assert (trace.input_tokens, trace.output_tokens) == (140, 40)
     assert trace.ttft_ms is not None and trace.latency_ms >= trace.ttft_ms
     assert trace.chunk_ids == [5, 6] and trace.distances == [0.1235, 0.2]
     assert [(s["type"], s["name"]) for s in trace.steps] == [
         ("routing", "route"), ("retrieval", "search"), ("llm", "sufficiency"),
-        ("llm", "answer_stream"), ("llm", "followups"),
+        ("guard", "output"), ("llm", "answer_stream"), ("llm", "followups"),
     ]
     assert trace.steps[0]["intent"] == "info_institucional" and trace.steps[0]["source"] == "l1"
     assert trace.guard_flags == [] and trace.error == ""
@@ -548,6 +552,7 @@ def test_variante_v0_sem_chamadas_estruturadas_e_prompt_completo(conversation, e
     settings.CHAT_AGENT_ENABLED = False
     settings.CHAT_SUFFICIENCY_CHECK_ENABLED = False
     settings.CHAT_FOLLOWUPS_ENABLED = False
+    settings.CHAT_OUTPUT_GUARD_ENABLED = False
     env.chunks = [chunk()]
 
     events = run(conversation, "Quais disciplinas tem no semestre?")  # regex de grade da v0

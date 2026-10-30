@@ -294,6 +294,11 @@ class OutputGuard:
     def _enqueue(self, block: str) -> None:
         self.stats.blocks += 1
         flags = regex_flags(block, self.titles)
+        if flags and all(flag == guard.FLAG_REF for flag in flags):
+            # Só uma referência opaca [T#]: removê-la é seguro (o resto do bloco vale).
+            self.stats.flags.extend(flags)
+            block = guard.redact(block)
+            flags = []
         if flags:
             # Reprovado na regex: não precisa de juiz; a correção é feita na liberação.
             self.stats.flags.extend(flags)

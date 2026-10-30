@@ -84,8 +84,8 @@ def test_guarda_redige_refs_vazadas_e_grava_flags(conversation, fake_llm):
 
     events = _run(conversation, "Qual a média?")
 
-    # O stream já mostrou a ref (não dá para desfazer), mas o salvo sai limpo.
-    assert "[T1]" in "".join(e.content for e in events if isinstance(e, TokenEvent))
+    # A guarda em blocos remove a ref antes de transmitir; o salvo é o mesmo texto.
+    assert "[T1]" not in "".join(e.content for e in events if isinstance(e, TokenEvent))
     answer = conversation.messages.get(role="assistant")
     assert "[T1]" not in answer.content
     assert answer.content == "A média é 7 e a frequência mínima é 75%."
@@ -142,13 +142,15 @@ def test_desconexao_do_cliente_salva_texto_parcial(conversation, fake_llm):
     fake_llm("Uma ", "pilha ", "é LIFO.")
 
     gen = services.send_message(conversation, "O que é uma pilha?")
+    shown = ""
     for event in gen:
-        if isinstance(event, TokenEvent) and event.content.startswith("pilha"):
+        if isinstance(event, TokenEvent):
+            shown += event.content
             break
     gen.close()  # equivale ao cliente fechar a conexão (GeneratorExit)
 
     answer = conversation.messages.get(role="assistant")
-    assert answer.content == "Uma pilha "
+    assert shown and answer.content == shown
     assert answer.trace.guard_flags == []
 
 
@@ -220,11 +222,12 @@ def test_endpoint_envia_sse_tipado(api, conversation, fake_llm):
     assert response.status_code == 200 and response["Content-Type"].startswith("text/event-stream")
     events = _sse(response)
     names = [name for name, _ in events]
-    assert names == ["status", "meta", "status", "status", None, None, "done"]
+    # Os tokens saem em blocos validados pela guarda: "Olá mundo" é um bloco só.
+    assert names == ["status", "meta", "status", "status", None, "done"]
     assert events[0][1] == {"step": "routing", "label": "Pensando…"}
     assert events[1][1] == {"user_message_id": conversation.messages.get(role="user").id, "route": "direta"}
     assert events[2][1] == {"step": "searching", "label": "Procurando nas informações do curso…"}
-    assert events[4][1] == {"content": "Olá"}
+    assert events[4][1] == {"content": "Olá mundo"}
     assert events[-1][1] == {"message_id": conversation.messages.get(role="assistant").id}
 
 

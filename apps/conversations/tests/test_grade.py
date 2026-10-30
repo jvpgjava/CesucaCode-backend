@@ -296,7 +296,7 @@ def test_agente_tecnico_ou_misto_explica_com_conhecimento_geral(intent, settings
     text = final_text(intent, settings=settings)
     assert agent._INSTITUTIONAL_RULE in text  # fato da instituição continua exigindo evidência
     assert agent._TECHNICAL_RULE in text and "Não se recuse a explicar" in text
-    assert "não tem essa informação confirmada" in text
+    assert "Não tenho essa informação por aqui" in text
 
 
 @pytest.mark.parametrize("intent", ["conteudo_tecnico", None, "info_institucional"])

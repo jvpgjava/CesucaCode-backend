@@ -62,13 +62,17 @@ META_TERMS = re.compile(
     # forma do dado / incerteza explicada pelo dado
     r"|formato d[oa]s? (arquivo|documento|calend[aá]rio|dado|tabela|cronograma)"
     r"|(informa[cç][aã]o|informa[cç][oõ]es|lista|tabela|calend[aá]rio|cronograma|dados?) (est[aá]|est[aã]o|parece|parecem) incomplet"
-    r"|n[aã]o consigo (dizer|afirmar|garantir|precisar) com (seguran[cç]a|certeza)",
+    r"|n[aã]o consigo (dizer|afirmar|garantir|precisar) com (seguran[cç]a|certeza)"
+    # duas versões de um dado / "aparece como"
+    r"|aparecem? (como|as duas|em duas|duas vezes)|(as )?duas (vers[oõ]es|datas) (aparecem|constam)"
+    r"|aparecem as duas|constam (as )?duas",
     re.IGNORECASE,
 )
 # Sinais de que vale a pena chamar o juiz LLM num bloco que passou na regex.
 SOFT_TRIGGERS = re.compile(
     r"n[aã]o tenho|n[aã]o consigo|n[aã]o encontr|n[aã]o h[aá] (registro|informa)|n[aã]o est[aá]|n[aã]o aparece"
-    r"|informa[cç]|dados|calend[aá]rio|cronograma|confirm|registr|sistema|document|arquivo|tabela|lista\b",
+    r"|informa[cç]|dados|calend[aá]rio|cronograma|confirm|registr|sistema|document|arquivo|tabela|lista\b"
+    r"|aparece|consta|m[eê]s exato|o m[eê]s\b",
     re.IGNORECASE,
 )
 _SENTENCE_END = re.compile(r"(?<!\b[A-Z])(?<!\bProf)(?<!\bDr)(?<!\bSr)(?<!\bSra)(?<!\bpág)(?<!\bn)(?<!\bart)[.!?…](?=\s)")

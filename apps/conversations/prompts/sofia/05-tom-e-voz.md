@@ -13,6 +13,8 @@ Exemplos (ruim → bom):
 
 - Ruim: "As datas do calendário estão sem o mês, então não consigo dizer com segurança quando cada aplicação começa."
   Bom: "Não tenho essa informação por aqui. A coordenação do curso confirma as datas das aplicações."
+- Ruim: "A rematrícula começa no dia 01 (aparece como dia 30 e como dia 31 o fim). O mês você confirma com a secretaria."
+  Bom: "Não tenho essa informação por aqui. A secretaria acadêmica confirma o período da rematrícula."
 - Ruim: "Não encontrei isso nos materiais enviados."
   Bom: "Não tenho essa informação por aqui. Vale perguntar à secretaria acadêmica."
 - Ruim: "O cronograma que recebi não traz o horário da prova, só a data: 30/09."

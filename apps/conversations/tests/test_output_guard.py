@@ -197,3 +197,15 @@ def test_reescrita_vazia_corta_o_trecho(rewriter):
 def test_reescrita_vazia_no_inicio_vira_abstencao(rewriter):
     rewriter["text"] = ""
     assert run([FRASE_REAL]).startswith(services.ABSTENTION_PHRASE)
+
+
+@pytest.mark.parametrize(
+    "texto",
+    ["vai até o dia 30 ou 31 (aparece as duas datas).", "o fim aparece como dia 30 e como dia 31.", "As duas versões aparecem no prazo."],
+)
+def test_regex_pega_duas_versoes(texto):
+    assert regex_flags(texto)
+
+
+def test_regex_nao_pega_aparece_tecnico():
+    assert regex_flags("O erro aparece quando a lista está vazia.") == []

@@ -186,6 +186,40 @@ def test_progresso_e_aviso_de_espera_durante_o_processamento(admin, monkeypatch,
     assert document.processing_detail == "" and document.processing_resume_at is None
 
 
+def test_reprocessar_mantem_conteudo_anterior_ate_a_troca(admin, monkeypatch, sleeps):
+    monkeypatch.setattr(services._executor, "submit", lambda *a, **k: None)
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: FakeEmbeddings())
+    document = make_document(admin)
+    services._process_document(document)
+    antigos = set(document.chunks.values_list("id", flat=True))
+
+    services.reprocess_document(document)
+    assert set(document.chunks.values_list("id", flat=True)) == antigos  # nada apagado ao enfileirar
+
+    services._process_document(document)
+    novos = set(document.chunks.values_list("id", flat=True))
+    assert novos and not novos & antigos  # trocados pelos novos no fim
+
+
+def test_reprocessamento_que_falha_mantem_conteudo_anterior(admin, monkeypatch, sleeps):
+    monkeypatch.setattr(services._executor, "submit", lambda *a, **k: None)
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: FakeEmbeddings())
+    document = make_document(admin)
+    services._process_document(document)
+    antigos = set(document.chunks.values_list("id", flat=True))
+
+    monkeypatch.setattr(
+        ai_providers, "get_embedding_model", lambda: FakeEmbeddings(errors=[RuntimeError(GEMINI_429_DIARIO)])
+    )
+    services.reprocess_document(document)
+    services._process_document(document)
+
+    document.refresh_from_db()
+    assert document.status == Document.Status.FAILED
+    assert "conteúdo anterior" in document.processing_error
+    assert set(document.chunks.values_list("id", flat=True)) == antigos
+
+
 def test_reprocessar_reinicia_o_acompanhamento(admin, monkeypatch):
     monkeypatch.setattr(services._executor, "submit", lambda *a, **k: None)
     document = make_document(admin, processing_progress=100, processing_detail="x", status=Document.Status.FAILED)

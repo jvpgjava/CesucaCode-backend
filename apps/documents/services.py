@@ -66,8 +66,10 @@ def create_document(*, title, courses, file, uploaded_by) -> Document:
 
 
 def reprocess_document(document: Document) -> Document:
-    document.chunks.all().delete()
-    document.disciplinas.all().delete()
+    """Reenfileira o processamento. Os chunks e disciplinas atuais NÃO são apagados
+    aqui: continuam respondendo no chat até a troca atômica pelos novos, no fim de um
+    processamento bem-sucedido (ver `_process_document`). Se o reprocessamento falhar
+    (ex.: cota do provider), o conteúdo anterior continua valendo."""
     document.status = Document.Status.PROCESSING
     document.processing_error = ""
     document.processing_detail = QUEUED_DETAIL
@@ -368,6 +370,9 @@ def _process_document(document: Document) -> None:
         _set_progress(document, SAVING_DETAIL, EMBEDDING_PROGRESS_END)
 
         with transaction.atomic():
+            # Troca atômica: o conteúdo anterior (reprocessamento) só sai junto com a
+            # entrada do novo. Sem janela em que o material fica vazio no chat.
+            document.chunks.all().delete()
             DocumentChunk.objects.bulk_create(
                 [
                     DocumentChunk(
@@ -416,6 +421,8 @@ def _process_document(document: Document) -> None:
             document.processing_error = (
                 "Falha ao processar o arquivo. Tente reenviar ou contate o suporte."
             )
+        if document.chunks.exists():
+            document.processing_error += " O conteúdo anterior deste material continua disponível no chat."
         document.status = Document.Status.FAILED
         document.processing_detail = ""
         document.processing_resume_at = None

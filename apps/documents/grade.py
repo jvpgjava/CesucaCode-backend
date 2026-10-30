@@ -23,9 +23,9 @@ GRADE_SOURCE_NOTE = (
 def _visible_disciplinas(user):
     from .views import get_documents_queryset  # import tardio: views importa services
 
-    queryset = Disciplina.objects.filter(
-        document__in=get_documents_queryset(user), document__status="ready"
-    ).select_related("course")
+    # Sem filtro de status, como em retrieval: disciplinas só são gravadas na troca
+    # atômica de um processamento bem-sucedido (reprocessar mantém as anteriores).
+    queryset = Disciplina.objects.filter(document__in=get_documents_queryset(user)).select_related("course")
     if user.role == User.Role.CS_ADMIN:
         return queryset
     if user.role == User.Role.CS_COORDINATOR:

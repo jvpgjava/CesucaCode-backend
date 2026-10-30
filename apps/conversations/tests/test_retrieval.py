@@ -160,20 +160,24 @@ def test_filtra_por_curso_e_permissoes(student, course, ads, admin, embed):
     cc_doc = make_doc(admin, "CC", [course], [("S", "regra de matrícula cc", vec(1.0))])
     ads_doc = make_doc(admin, "ADS", [ads], [("S", "regra de matrícula ads", vec(1.0))])
     both_doc = make_doc(admin, "Ambos", [course, ads], [("S", "regra de matrícula geral", vec(1.0))])
-    make_doc(admin, "Preso", [course, ads], [("S", "matrícula em processamento", vec(1.0))], status="processing")
+    # Reprocessando: os chunks que ainda existem são a versão anterior, válida (a troca
+    # pelos novos é atômica no fim do processamento). Continua respondendo.
+    reprocessando = make_doc(
+        admin, "Reprocessando", [course, ads], [("S", "matrícula versão anterior", vec(1.0))], status="processing"
+    )
 
     def doc_ids(user, **kw):
         return {c.document_id for c in retrieval.search(user, "matrícula", **kw)}
 
     # Admin enxerga tudo; o filtro de curso restringe.
-    assert doc_ids(admin) == {cc_doc.id, ads_doc.id, both_doc.id}
-    assert doc_ids(admin, course_code="ads") == {ads_doc.id, both_doc.id}
-    assert doc_ids(admin, course_code="cc") == {cc_doc.id, both_doc.id}
+    assert doc_ids(admin) == {cc_doc.id, ads_doc.id, both_doc.id, reprocessando.id}
+    assert doc_ids(admin, course_code="ads") == {ads_doc.id, both_doc.id, reprocessando.id}
+    assert doc_ids(admin, course_code="cc") == {cc_doc.id, both_doc.id, reprocessando.id}
     for livre in ("ambos", "indefinido", None):
-        assert doc_ids(admin, course_code=livre) == {cc_doc.id, ads_doc.id, both_doc.id}
+        assert doc_ids(admin, course_code=livre) == {cc_doc.id, ads_doc.id, both_doc.id, reprocessando.id}
     # Estudante de CC nunca vê material só de ADS, nem pedindo o filtro "ads".
-    assert doc_ids(student) == {cc_doc.id, both_doc.id}
-    assert doc_ids(student, course_code="ads") == {both_doc.id}
+    assert doc_ids(student) == {cc_doc.id, both_doc.id, reprocessando.id}
+    assert doc_ids(student, course_code="ads") == {both_doc.id, reprocessando.id}
 
 
 def test_flag_off_so_vetorial_com_corte_de_distancia(student, course, admin, embed, settings):

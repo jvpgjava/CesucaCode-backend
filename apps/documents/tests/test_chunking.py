@@ -45,8 +45,18 @@ def test_txt_simples_continua_funcionando():
 
 # ---------------------------------------------------------------- título e legenda (cronogramas em PDF)
 
-from docling_core.types.doc import DocumentOrigin, TableCell, TableData  # noqa: E402
+from docling_core.types.doc import (  # noqa: E402
+    BoundingBox,
+    CoordOrigin,
+    DocumentOrigin,
+    ProvenanceItem,
+    Size,
+    TableCell,
+    TableData,
+)
 from docling_core.types.doc.document import DoclingDocument  # noqa: E402
+
+TITULO = "CRONOGRAMA - PROJ. E DESENV. DE SISTEMAS MÓVEIS"
 
 
 def _tabela(linhas):
@@ -58,38 +68,57 @@ def _tabela(linhas):
     return TableData(num_rows=len(linhas), num_cols=len(linhas[0]), table_cells=cells)
 
 
-def _cronograma_pdf(titulo="CRONOGRAMA - PROJ. E DESENV. DE SISTEMAS MÓVEIS", *, pdf=True):
-    """Mesma forma do PDF real: logo, título e "Legenda" como cabeçalhos do MESMO nível,
-    a legenda de cores como tabela só de cabeçalho e a tabela de aulas."""
-    doc = DoclingDocument(name="cronograma")
+def _em(topo, altura=20):
+    """Posição na página 1 (origem no topo): quanto menor `topo`, mais alto na página."""
+    bbox = BoundingBox(l=50, t=topo, r=550, b=topo + altura, coord_origin=CoordOrigin.TOPLEFT)
+    return ProvenanceItem(page_no=1, bbox=bbox, charspan=(0, 0))
+
+
+def _pdf(nome="cronograma", *, pdf=True):
+    doc = DoclingDocument(name=nome)
     doc.origin = DocumentOrigin(
         mimetype="application/pdf" if pdf else "text/markdown", binary_hash=1, filename="x"
     )
-    doc.add_picture()
-    doc.add_heading(titulo, level=1)
-    doc.add_heading("Legenda", level=1)
-    doc.add_table(data=_tabela([["Feriado", "Prova", "Trabalho", "AF"]]))
-    doc.add_table(data=_tabela([["Aula", "Data", "Conteúdo"], ["9", "05/10", "Avaliação A1 - 3,5"]]))
+    doc.add_page(page_no=1, size=Size(width=600, height=800))
     return doc
 
 
-def test_titulo_do_pdf_vira_raiz_do_heading_e_legenda_some():
-    chunks = chunking.chunk_docling_document(_cronograma_pdf())
+def _cronograma_pdf(*, titulo_lido_por_ultimo=False, pdf=True):
+    """Mesma forma dos PDFs reais: logo, título e "Legenda" como cabeçalhos do MESMO
+    nível, a legenda de cores como tabela só de cabeçalho e a tabela de aulas. No
+    cronograma de IHC o Docling lê o título por último, embora ele esteja no topo."""
+    doc = _pdf(pdf=pdf)
+    doc.add_picture(prov=_em(10, 60))
+    if not titulo_lido_por_ultimo:
+        doc.add_heading(TITULO, level=1, prov=_em(90))
+    doc.add_heading("Legenda", level=1, prov=_em(130))
+    doc.add_table(data=_tabela([["Feriado", "Prova", "Trabalho", "AF"]]), prov=_em(150))
+    doc.add_table(data=_tabela([["Aula", "Data", "Conteúdo"], ["9", "05/10", "Avaliação A1 - 3,5"]]), prov=_em(200, 400))
+    if titulo_lido_por_ultimo:
+        doc.add_heading(TITULO, level=1, prov=_em(90))
+    return doc
+
+
+@pytest.mark.parametrize("titulo_lido_por_ultimo", [False, True])
+def test_titulo_do_pdf_vira_raiz_do_heading_e_legenda_some(titulo_lido_por_ultimo):
+    chunks = chunking.chunk_docling_document(_cronograma_pdf(titulo_lido_por_ultimo=titulo_lido_por_ultimo))
     assert chunks
     for c in chunks:
-        assert c.heading == "CRONOGRAMA - PROJ. E DESENV. DE SISTEMAS MÓVEIS"
-        assert "Legenda" not in c.heading and "Feriado | Prova" not in c.content
+        assert c.heading == TITULO
+        assert "Feriado | Prova" not in c.content
     assert any("| 9 | 05/10 | Avaliação A1 - 3,5 |" in c.content for c in chunks)
 
 
-def test_document_title_ignora_logo_e_exige_bloco_de_titulo():
-    assert chunking.document_title(_cronograma_pdf()) == "CRONOGRAMA - PROJ. E DESENV. DE SISTEMAS MÓVEIS"
-    # Cabeçalho seguido de conteúdo é só a primeira seção, não título.
-    doc = DoclingDocument(name="horario")
-    doc.origin = DocumentOrigin(mimetype="application/pdf", binary_hash=1, filename="x")
-    doc.add_heading("SEGUNDA-FEIRA", level=1)
-    doc.add_table(data=_tabela([["Hora", "Disciplina"], ["19:00", "IHC"]]))
-    doc.add_heading("TERÇA-FEIRA", level=1)
+def test_document_title_usa_posicao_na_pagina_e_ignora_logo():
+    assert chunking.document_title(_cronograma_pdf()) == TITULO
+    assert chunking.document_title(_cronograma_pdf(titulo_lido_por_ultimo=True)) == TITULO
+
+
+def test_cabecalho_seguido_de_conteudo_nao_e_titulo():
+    doc = _pdf("horario")
+    doc.add_heading("SEGUNDA-FEIRA", level=1, prov=_em(50))
+    doc.add_table(data=_tabela([["Hora", "Disciplina"], ["19:00", "IHC"]]), prov=_em(80, 200))
+    doc.add_heading("TERÇA-FEIRA", level=1, prov=_em(300))
     assert chunking.document_title(doc) == ""
 
 

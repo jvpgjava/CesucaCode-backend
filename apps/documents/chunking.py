@@ -25,7 +25,13 @@ from docling_core.transforms.serializer.base import BaseDocSerializer, BaseSeria
 from docling_core.transforms.serializer.markdown import MarkdownParams, MarkdownTableSerializer
 from docling_core.types.doc.base import ImageRefMode
 from docling_core.types.doc import ContentLayer
-from docling_core.types.doc.document import DoclingDocument, SectionHeaderItem, TextItem, TitleItem
+from docling_core.types.doc.document import (
+    DoclingDocument,
+    PictureItem,
+    SectionHeaderItem,
+    TextItem,
+    TitleItem,
+)
 
 from . import cleaning, disciplinas
 
@@ -160,26 +166,39 @@ def document_title(document: DoclingDocument) -> str:
     Sem isso, num PDF em que o título e as seções são cabeçalhos do mesmo nível
     (cronogramas: título e "Legenda"), a primeira seção apaga o título da hierarquia e
     os chunks de documentos parecidos (o cronograma de cada disciplina) ficam
-    indistinguíveis para o LLM. Só conta como título um `TitleItem` ou um cabeçalho
-    que abre o documento seguido direto de outro cabeçalho (bloco de título antes da
-    primeira seção); um cabeçalho seguido de conteúdo é só a primeira seção. É o texto
-    do próprio documento, nunca o nome do arquivo. Só para PDF: em Markdown/DOCX a
-    hierarquia já vem explícita no arquivo."""
+    indistinguíveis para o LLM. É o texto do próprio documento, nunca o nome do arquivo.
+
+    Usa a posição na PRIMEIRA PÁGINA, não a ordem de leitura, que às vezes sai trocada
+    (o título lido depois da tabela). Conta como título um `TitleItem` no topo, ou um
+    cabeçalho no topo com outro cabeçalho logo abaixo (bloco de título antes da primeira
+    seção); cabeçalho seguido de conteúdo é só a primeira seção. Figuras (o logo) não
+    contam. Só para PDF: em Markdown/DOCX a hierarquia já vem explícita no arquivo."""
     origin = getattr(document, "origin", None)
     if origin is None or origin.mimetype != "application/pdf":
         return ""
-    body = [item for item, _ in document.iterate_items() if item.content_layer == ContentLayer.BODY]
-    # Figuras antes do título (logo da instituição) não contam; texto vazio também não.
-    while body and (not isinstance(body[0], TextItem) or not body[0].text.strip()):
-        body.pop(0)
-    if not body or not isinstance(body[0], (TitleItem, SectionHeaderItem)):
+    page = document.pages.get(1)
+    if page is None:
         return ""
-    title = " ".join(body[0].text.split())
+    placed = []
+    for item, _ in document.iterate_items():
+        if item.content_layer != ContentLayer.BODY or isinstance(item, PictureItem):
+            continue
+        if isinstance(item, TextItem) and not item.text.strip():
+            continue
+        prov = next((p for p in item.prov if p.page_no == 1), None)
+        if prov is not None:
+            top = prov.bbox.to_top_left_origin(page_height=page.size.height).t
+            placed.append((top, item))
+    placed.sort(key=lambda pair: pair[0])
+    if not placed or not isinstance(placed[0][1], (TitleItem, SectionHeaderItem)):
+        return ""
+    first = placed[0][1]
+    title = " ".join(first.text.split())
     if len(title) > MAX_TITLE_CHARS:
         return ""
-    if isinstance(body[0], TitleItem):
+    if isinstance(first, TitleItem):
         return title
-    following = body[1] if len(body) > 1 else None
+    following = placed[1][1] if len(placed) > 1 else None
     return title if isinstance(following, SectionHeaderItem) else ""
 
 def _split_long_text(text: str, max_chars: int, overlap: int) -> list[str]:

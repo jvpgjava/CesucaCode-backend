@@ -4,7 +4,6 @@
       └─ routing.route (L0 regras -> L1 LLM pequeno, ou fallback = heurística da v0)
            └─ MetaEvent(route) e prompt por intenção
       └─ executor da rota
-           clarificacao ... pergunta o curso (só admin/coordenador de vários cursos), sem LLM
            meta ........... resposta curta, sem retrieval
            recusa ......... fora de escopo/manipulação: sem retrieval nem web, resposta curta
            direta ......... retrieval (+ web em grade) + checagem de suficiência + resposta
@@ -46,10 +45,9 @@ ROUTE_REFUSAL = "recusa"
 ROUTE_DIRECT = "direta"
 ROUTE_COMPOSED = "composta"
 ROUTE_PEDAGOGIC = "pedagogica"
-ROUTE_CLARIFICATION = "clarificacao"
 
 # Rotas em que não faz sentido sugerir perguntas de continuação.
-_NO_FOLLOWUP_ROUTES = frozenset({ROUTE_REFUSAL, ROUTE_CLARIFICATION})
+_NO_FOLLOWUP_ROUTES = frozenset({ROUTE_REFUSAL})
 # Intenções em que vale conferir se o contexto sustenta a resposta (a resposta muda
 # de uma instituição/curso para outro; em conteúdo técnico o modelo pode explicar).
 SUFFICIENCY_INTENTS = frozenset({"info_institucional", "grade_disciplinas"})
@@ -115,8 +113,6 @@ class FollowUps(BaseModel):
 
 def route_for(decision: routing.RouteDecision) -> str:
     """Rota de execução da decisão. `composta` só vale com o agente ligado."""
-    if decision.clarification:
-        return ROUTE_CLARIFICATION
     if decision.intent == "meta":
         return ROUTE_META
     if decision.intent in ("fora_escopo", "manipulacao"):
@@ -185,9 +181,7 @@ class _Turn:
             system_text = self._system_text(decision, hint_level)
             history_msgs = services.history_messages(history)
 
-            if self.route == ROUTE_CLARIFICATION:
-                yield from self._clarify(decision)
-            elif self.route == ROUTE_META:
+            if self.route == ROUTE_META:
                 yield status("writing")
                 messages = [SystemMessage(content=system_text), *history_msgs, HumanMessage(content=self.user_text)]
                 yield from self._stream(messages)
@@ -243,12 +237,6 @@ class _Turn:
         return f"{base}\n\n{services.build_user_profile_block(self.user)}"
 
     # --- executores ------------------------------------------------------------------
-
-    def _clarify(self, decision: routing.RouteDecision) -> Iterator:
-        """Pergunta o curso (texto fixo do roteador): sem LLM, sem retrieval."""
-        self.recorder.mark_first_token()
-        self.pieces.append(decision.clarification)
-        yield TokenEvent(decision.clarification)
 
     def _direct(self, decision, system_text: str, history_msgs: list) -> Iterator:
         """Retrieval + (web) + (suficiência) + resposta. Serve às rotas direta e

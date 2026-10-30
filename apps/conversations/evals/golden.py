@@ -8,8 +8,8 @@ import yaml
 GOLDEN_PATH = Path(__file__).with_name("golden.yaml")
 
 PERSONAS = ("student_cc", "student_ads", "admin", "coordinator_cc")
-EXPECTS = ("resposta", "sem_info", "recusa", "clarificacao")
-ROUTES = ("direta", "composta", "meta", "recusa", "pedagogica", "clarificacao")
+EXPECTS = ("resposta", "sem_info", "recusa")
+ROUTES = ("direta", "composta", "meta", "recusa", "pedagogica")
 HISTORY_ROLES = ("user", "assistant")
 
 
@@ -131,7 +131,7 @@ def validate_cases(raw_cases) -> list[GoldenCase]:
         # Coerência entre expectativa e fatos esperados.
         if expect == "resposta" and not must_include and not rubric:
             problems.append(f"{where}: `resposta` exige `must_include` ou `rubric`")
-        if expect in ("sem_info", "recusa", "clarificacao") and must_include:
+        if expect in ("sem_info", "recusa") and must_include:
             problems.append(f"{where}: `{expect}` não deve ter `must_include`")
 
         if isinstance(case_id, str) and isinstance(question, str) and persona in PERSONAS and expect in EXPECTS:

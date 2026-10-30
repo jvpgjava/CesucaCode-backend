@@ -63,9 +63,20 @@ def make_document(admin, name="material.txt", content=b"Primeiro paragrafo.\n\nS
 # --- retry de embedding ------------------------------------------------------------
 
 
+GEMINI_429 = (
+    "Error embedding content (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. Quota exceeded for metric: "
+    "generativelanguage.googleapis.com/embed_content_free_tier_requests, limit: 100. "
+    "Please retry in 24.5s. 'retryDelay': '24s'"
+)
+GEMINI_429_DIARIO = (
+    "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: embed_content_free_tier_requests, "
+    "quotaId: EmbedContentRequestsPerDayPerUserPerProjectPerModel-FreeTier"
+)
+
+
 def test_retry_com_backoff_em_erro_transitorio(monkeypatch, sleeps, settings):
     settings.EMBEDDING_RETRY_BASE_SECONDS = 5
-    model = FakeEmbeddings(errors=[RuntimeError("429 RESOURCE_EXHAUSTED"), TimeoutError("timed out")])
+    model = FakeEmbeddings(errors=[TimeoutError("timed out"), ConnectionError("reset")])
     monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
 
     result = services._embed_documents(["a", "b"])
@@ -82,22 +93,140 @@ def test_erro_permanente_nao_tenta_de_novo(monkeypatch, sleeps):
     assert len(model.calls) == 1 and sleeps == []
 
 
-def test_retry_esgota_tentativas(monkeypatch, sleeps, settings):
+def test_transitorio_esgota_tentativas(monkeypatch, sleeps, settings):
     settings.EMBEDDING_RETRY_ATTEMPTS = 3
-    model = FakeEmbeddings(errors=[RuntimeError("429 quota")] * 5)
+    model = FakeEmbeddings(errors=[TimeoutError("timed out")] * 5)
     monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(TimeoutError):
         services._embed_documents(["a"])
     assert len(model.calls) == 3 and len(sleeps) == 2
 
 
-def test_cota_esgotada_marca_falha_com_mensagem(admin, monkeypatch, sleeps):
-    model = FakeEmbeddings(errors=[RuntimeError("429 quota")] * 5)
+def test_cota_por_minuto_espera_o_tempo_indicado_e_continua(monkeypatch, sleeps, settings):
+    # Mais esperas do que EMBEDDING_RETRY_ATTEMPTS: cota por minuto não conta como falha.
+    settings.EMBEDDING_RETRY_ATTEMPTS = 2
+    model = FakeEmbeddings(errors=[RuntimeError(GEMINI_429)] * 4)
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
+    waits = []
+
+    result = services._embed_documents(["a"], on_wait=waits.append)
+
+    assert len(result) == 1 and len(model.calls) == 5
+    assert sleeps == [26.5] * 4 == waits  # "retry in 24.5s" + margem de 2s
+
+
+def test_cota_sem_indicacao_de_tempo_espera_30s(monkeypatch, sleeps):
+    model = FakeEmbeddings(errors=[RuntimeError("429 quota")])
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
+    services._embed_documents(["a"])
+    assert sleeps == [30.0]
+
+
+def test_cota_por_minuto_desiste_no_teto_de_espera(monkeypatch, sleeps, settings):
+    settings.EMBEDDING_QUOTA_MAX_WAIT_SECONDS = 60
+    model = FakeEmbeddings(errors=[RuntimeError(GEMINI_429)] * 10)
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
+    with pytest.raises(RuntimeError):
+        services._embed_documents(["a"])
+    assert sleeps == [26.5, 26.5]  # a terceira passaria do teto de 60s
+
+
+def test_cota_diaria_falha_na_hora(monkeypatch, sleeps):
+    model = FakeEmbeddings(errors=[RuntimeError(GEMINI_429_DIARIO)])
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
+    with pytest.raises(services.DailyQuotaExceededError):
+        services._embed_documents(["a"])
+    assert sleeps == []
+
+
+def test_cota_esgotada_por_tempo_demais_marca_falha_com_mensagem(admin, monkeypatch, sleeps, settings):
+    settings.EMBEDDING_QUOTA_MAX_WAIT_SECONDS = 60
+    model = FakeEmbeddings(errors=[RuntimeError(GEMINI_429)] * 10)
     monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
     document = make_document(admin)
     services._process_document(document)
     document.refresh_from_db()
-    assert document.status == Document.Status.FAILED and "cota" in document.processing_error
+    assert document.status == Document.Status.FAILED and "limite de uso" in document.processing_error
+    assert document.processing_detail == "" and document.processing_resume_at is None
+
+
+def test_cota_diaria_marca_falha_com_mensagem(admin, monkeypatch, sleeps):
+    model = FakeEmbeddings(errors=[RuntimeError(GEMINI_429_DIARIO)])
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
+    document = make_document(admin)
+    services._process_document(document)
+    document.refresh_from_db()
+    assert document.status == Document.Status.FAILED and "limite diário" in document.processing_error
+
+
+def test_progresso_e_aviso_de_espera_durante_o_processamento(admin, monkeypatch, sleeps):
+    """Enquanto espera a cota, o documento mostra a mensagem e quando retoma; no fim,
+    o acompanhamento é limpo e o progresso vai a 100."""
+    model = FakeEmbeddings(errors=[RuntimeError(GEMINI_429)])
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: model)
+    document = make_document(admin)
+    snapshots = []
+
+    def sleep_and_snapshot(seconds):
+        sleeps.append(seconds)
+        snapshots.append(Document.objects.values(
+            "processing_detail", "processing_progress", "processing_resume_at", "updated_at"
+        ).get(pk=document.pk))
+
+    monkeypatch.setattr(services.time, "sleep", sleep_and_snapshot)
+    before = timezone.now()
+    services._process_document(document)
+
+    (during,) = snapshots
+    assert during["processing_detail"] == services.QUOTA_WAIT_DETAIL
+    assert during["processing_resume_at"] > before and during["updated_at"] >= before
+    assert services.EXTRACTION_PROGRESS <= during["processing_progress"] < 100
+    document.refresh_from_db()
+    assert document.status == Document.Status.READY and document.processing_progress == 100
+    assert document.processing_detail == "" and document.processing_resume_at is None
+
+
+def test_reprocessar_mantem_conteudo_anterior_ate_a_troca(admin, monkeypatch, sleeps):
+    monkeypatch.setattr(services._executor, "submit", lambda *a, **k: None)
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: FakeEmbeddings())
+    document = make_document(admin)
+    services._process_document(document)
+    antigos = set(document.chunks.values_list("id", flat=True))
+
+    services.reprocess_document(document)
+    assert set(document.chunks.values_list("id", flat=True)) == antigos  # nada apagado ao enfileirar
+
+    services._process_document(document)
+    novos = set(document.chunks.values_list("id", flat=True))
+    assert novos and not novos & antigos  # trocados pelos novos no fim
+
+
+def test_reprocessamento_que_falha_mantem_conteudo_anterior(admin, monkeypatch, sleeps):
+    monkeypatch.setattr(services._executor, "submit", lambda *a, **k: None)
+    monkeypatch.setattr(ai_providers, "get_embedding_model", lambda: FakeEmbeddings())
+    document = make_document(admin)
+    services._process_document(document)
+    antigos = set(document.chunks.values_list("id", flat=True))
+
+    monkeypatch.setattr(
+        ai_providers, "get_embedding_model", lambda: FakeEmbeddings(errors=[RuntimeError(GEMINI_429_DIARIO)])
+    )
+    services.reprocess_document(document)
+    services._process_document(document)
+
+    document.refresh_from_db()
+    assert document.status == Document.Status.FAILED
+    assert "conteúdo anterior" in document.processing_error
+    assert set(document.chunks.values_list("id", flat=True)) == antigos
+
+
+def test_reprocessar_reinicia_o_acompanhamento(admin, monkeypatch):
+    monkeypatch.setattr(services._executor, "submit", lambda *a, **k: None)
+    document = make_document(admin, processing_progress=100, processing_detail="x", status=Document.Status.FAILED)
+    services.reprocess_document(document)
+    document.refresh_from_db()
+    assert document.status == Document.Status.PROCESSING and document.processing_progress == 0
+    assert document.processing_detail == services.QUEUED_DETAIL
 
 
 # --- ingestão ponta a ponta (TXT) --------------------------------------------------

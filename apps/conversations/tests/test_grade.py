@@ -51,9 +51,10 @@ def grade_data(admin, tmp_path, settings):
     # material compartilhado: a disciplina é do CC e o aluno de ADS não deve vê-la
     compartilhado = make_document(admin, "Grade conjunta", ["cc", "ads"])
     add(compartilhado, "Teoria da Computação", 1, 72, "2022/2", "cc")
-    # ainda processando: não aparece
-    processando = make_document(admin, "Em processamento", ["cc"], status=Document.Status.PROCESSING)
-    add(processando, "Disciplina Fantasma", 2, 40, "2025/1", "cc")
+    # reprocessando: as disciplinas gravadas são da versão anterior (troca atômica no
+    # fim do processamento), então continuam valendo
+    reprocessando = make_document(admin, "Em reprocessamento", ["cc"], status=Document.Status.PROCESSING)
+    add(reprocessando, "Disciplina da Versão Anterior", 8, 40, "2025/1", "cc")
 
 
 @pytest.fixture
@@ -73,10 +74,12 @@ def nomes(items):
 def test_aluno_cc_ve_so_disciplinas_do_proprio_curso_prontas_e_deduplicadas(grade_data, student):
     items = grade.list_disciplinas(student)
 
-    assert nomes(items) == ["Algoritmos e Programação", "Teoria da Computação", "Banco de Dados", "Modelagem de Dados"]
+    assert nomes(items) == [
+        "Algoritmos e Programação", "Teoria da Computação", "Banco de Dados", "Modelagem de Dados",
+        "Disciplina da Versão Anterior",
+    ]  # fmt: skip
     banco = next(d for d in items if d.nome == "Banco de Dados")
     assert (banco.semestre, banco.carga_horaria, banco.periodo_letivo) == (5, 72, "2024/2")
-    assert "Disciplina Fantasma" not in nomes(items)  # documento não pronto
     assert "Desenvolvimento Web" not in nomes(items)  # documento de outro curso
 
 

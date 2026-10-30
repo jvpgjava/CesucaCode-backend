@@ -66,10 +66,14 @@ class RetrievedChunk:
 
 
 def get_accessible_chunks_queryset(user):
-    """Chunks prontos, com embedding, de documentos que o usuário pode ver."""
+    """Chunks com embedding de documentos que o usuário pode ver.
+
+    Sem filtro de status: chunks só são gravados (numa troca atômica) quando um
+    processamento termina bem, então todo chunk existente é conteúdo válido. Um
+    material em reprocessamento, ou cujo reprocessamento falhou, continua respondendo
+    com a versão anterior; um upload novo só aparece quando fica pronto."""
     return DocumentChunk.objects.filter(
         document__in=get_documents_queryset(user),
-        document__status="ready",
         embedding__isnull=False,
     ).select_related("document")
 

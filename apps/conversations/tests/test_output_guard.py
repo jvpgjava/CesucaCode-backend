@@ -161,3 +161,39 @@ def test_estatisticas(rewriter):
     "".join([*g.feed(FRASE_REAL), *g.finish()])
     assert g.stats.blocks == 1 and g.stats.rewrites == 1 and g.stats.replaced == 1
     assert any(f.startswith("meta_comment") for f in g.stats.flags)
+
+
+def test_reescrita_recebe_o_texto_ja_mostrado(monkeypatch):
+    seen = {}
+
+    def get_chat_model(role="answer", **kw):
+        class M:
+            def invoke(self, messages):
+                seen["human"] = messages[-1].content
+                from langchain_core.messages import AIMessage
+
+                return AIMessage(content="O mês exato você confirma com a secretaria acadêmica.")
+
+        return M()
+
+    monkeypatch.setattr(ai_providers, "get_chat_model", get_chat_model)
+    out = run(["A rematrícula vai do dia 01 ao dia 30 para veteranos regulares do curso.\n\n", "As datas estão sem o mês. "])
+    assert "<anterior>\nA rematrícula vai do dia 01" in seen["human"]
+    assert out.endswith("O mês exato você confirma com a secretaria acadêmica. ")
+
+
+def test_abstencao_generica_no_meio_da_resposta_vira_corte(rewriter):
+    rewriter["text"] = services.ABSTENTION_PHRASE + " A secretaria confirma."
+    out = run(["A rematrícula vai do dia 01 ao dia 30 para veteranos regulares do curso.\n\n", "As datas estão sem o mês. "])
+    assert out == "A rematrícula vai do dia 01 ao dia 30 para veteranos regulares do curso.\n\n"
+
+
+def test_reescrita_vazia_corta_o_trecho(rewriter):
+    rewriter["text"] = ""
+    out = run(["A A2 de Mobile é em 23/11, na aula 16 do semestre, valendo 3,0 ou 4,0.\n\n", "O cronograma que recebi não traz o horário. "])
+    assert out == "A A2 de Mobile é em 23/11, na aula 16 do semestre, valendo 3,0 ou 4,0.\n\n"
+
+
+def test_reescrita_vazia_no_inicio_vira_abstencao(rewriter):
+    rewriter["text"] = ""
+    assert run([FRASE_REAL]).startswith(services.ABSTENTION_PHRASE)

@@ -1,0 +1,56 @@
+name: Deploy
+
+# Deploy na VPS (sofia.abrxu.com) a cada push na main.
+#
+# Segurança (repositório público):
+# - Secrets nunca são entregues a workflows de PRs de forks; este workflow só roda
+#   em push na main e em disparo manual, por quem tem acesso de escrita.
+# - A chave SSH (secret VPS_SSH_KEY) é dedicada e, na VPS, presa a um forced command
+#   (/opt/cesucacode/deploy.sh): só aceita "backend <sha>" de um commit que já está na
+#   origin/main. Não abre shell, não faz port forwarding.
+# - O host é fixado por VPS_KNOWN_HOSTS (sem StrictHostKeyChecking=no).
+#
+# Secrets necessários (Settings > Secrets and variables > Actions):
+#   VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_KNOWN_HOSTS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://sofia.abrxu.com
+    steps:
+      - name: Configurar SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 "$VPS_USER@$VPS_HOST" "backend $GITHUB_SHA"
+
+      - name: Limpar chave
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

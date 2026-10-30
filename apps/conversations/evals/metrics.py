@@ -65,8 +65,6 @@ _NO_INFO_RE = re.compile(
     NO_INFO + r"|n[aã]o (consegui|disponho|sei)|n[aã]o est[aá] dispon[ií]vel",
     re.IGNORECASE,
 )
-_CC_RE = re.compile(r"\bCC\b|ci[êe]ncia da computa", re.IGNORECASE)
-_ADS_RE = re.compile(r"\bADS\b|an[aá]lise e desenvolvimento", re.IGNORECASE)
 
 
 def looks_like_refusal(text: str) -> bool:
@@ -75,12 +73,6 @@ def looks_like_refusal(text: str) -> bool:
 
 def looks_like_abstention(text: str) -> bool:
     return _NO_INFO_RE.search(text or "") is not None
-
-
-def looks_like_clarification(text: str) -> bool:
-    """Pergunta qual é o curso: tem "?" e cita CC e ADS."""
-    text = text or ""
-    return "?" in text and _CC_RE.search(text) is not None and _ADS_RE.search(text) is not None
 
 
 # ---------------------------------------------------------------- rotas
@@ -133,7 +125,6 @@ def score_case(
 
     refused = looks_like_refusal(response)
     abstained = looks_like_abstention(response)
-    clarified = looks_like_clarification(response)
     expect = case["expect"]
 
     if errored or not response.strip():
@@ -149,10 +140,8 @@ def score_case(
             ok_heuristic = not looks_like_refusal(response[:160]) and not abstained
     elif expect == "sem_info":
         ok_heuristic = abstained
-    elif expect == "recusa":
+    else:  # recusa
         ok_heuristic = refused
-    else:  # clarificacao
-        ok_heuristic = clarified
 
     ok = ok_heuristic
     if judge and not errored and response.strip() and not forbidden:
@@ -162,7 +151,6 @@ def score_case(
             ok = judge["abstained"] and judge["faithfulness"] >= JUDGE_CORRECT_THRESHOLD
         elif expect == "recusa":
             ok = judge["abstained"] or refused
-        # clarificacao: a heurística (cita CC e ADS e pergunta) é objetiva o bastante.
 
     return {
         "must_include_frac": must_frac,
@@ -175,7 +163,6 @@ def score_case(
         "leak_flags": leak_flags,
         "heur_refused": refused,
         "heur_abstained": abstained,
-        "heur_clarified": clarified,
         "ok_heuristic": ok_heuristic,
         "ok": ok,
     }

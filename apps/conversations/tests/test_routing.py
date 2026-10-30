@@ -5,7 +5,7 @@ from apps.ai_providers import services as ai_providers
 from apps.ai_providers.services import StructuredResult
 from apps.conversations import routing
 from apps.conversations.models import Conversation, Message
-from apps.conversations.routing import CLARIFICATION_COURSE, RouteDecision, _L1Output
+from apps.conversations.routing import RouteDecision, _L1Output
 
 from .fakes import ScriptedChatModel
 
@@ -150,28 +150,28 @@ def test_hints_trazem_curso_da_conversa(student, conversation):
 def test_estudante_sempre_usa_curso_do_perfil(student, conversation):
     # mesmo que o L1 ou o texto digam outra coisa e a intenção dependa de curso
     d = routing.resolve_course(student, conversation, decision(course="ads"), "grade de ADS")
-    assert d.course == "cc" and d.clarification is None
+    assert d.course == "cc"
 
 
-def test_estudante_nunca_recebe_clarification(ads):
+def test_estudante_usa_o_curso_do_perfil_em_qualquer_intencao(ads):
     student = User.objects.create_user(email="a@example.com", password="x", full_name="A", rgm="999", course=ads)
     conv = Conversation.objects.create(user=student)
     for intent in ("grade_disciplinas", "info_institucional", "conteudo_tecnico"):
-        d = routing.resolve_course(student, conv, decision(intent, "indefinido", clarification="qual?"), "oi")
-        assert d.course == "ads" and d.clarification is None
+        d = routing.resolve_course(student, conv, decision(intent, "indefinido"), "oi")
+        assert d.course == "ads"
 
 
 def test_estudante_sem_curso_conhecido_fica_indefinido_sem_perguntar(db):
     student = User.objects.create_user(email="s@example.com", password="x", full_name="S", rgm="888")
     conv = Conversation.objects.create(user=student)
     d = routing.resolve_course(student, conv, decision(), "grade")
-    assert d.course == "indefinido" and d.clarification is None
+    assert d.course == "indefinido"
 
 
 def test_coordenador_de_um_curso_usa_esse_curso(coordinator):
     conv = Conversation.objects.create(user=coordinator)
     d = routing.resolve_course(coordinator, conv, decision(course="ads"), "grade de ADS")
-    assert d.course == "cc" and d.clarification is None
+    assert d.course == "cc"
 
 
 def test_admin_mencao_explicita_vence_tudo(admin):
@@ -185,7 +185,7 @@ def test_admin_mencao_explicita_vence_tudo(admin):
 def test_admin_usa_curso_salvo_na_conversa(multi_coordinator):
     conv = Conversation.objects.create(user=multi_coordinator, metadata={"course": "ads"})
     d = routing.resolve_course(multi_coordinator, conv, decision(course="cc"), "e o 2º semestre?")
-    assert d.course == "ads" and d.clarification is None
+    assert d.course == "ads"
 
 
 def test_admin_usa_decisao_do_l1_e_persiste(admin):
@@ -196,29 +196,22 @@ def test_admin_usa_decisao_do_l1_e_persiste(admin):
     assert conv.metadata["course"] == "ads"
 
 
-def test_admin_indefinido_pergunta_so_quando_a_intencao_depende_do_curso(admin):
+def test_admin_sem_curso_nao_e_perguntado_e_fica_sem_filtro(admin):
+    """Sem curso definido, nada de pergunta "CC ou ADS?": o curso fica "indefinido"
+    (busca sem filtro de curso; a resposta cobre os dois) e nada é gravado."""
     conv = Conversation.objects.create(user=admin)
-    for intent in ("grade_disciplinas", "info_institucional"):
+    for intent in ("grade_disciplinas", "info_institucional", "conteudo_tecnico", "meta"):
         d = routing.resolve_course(admin, conv, decision(intent, "indefinido"), "quais disciplinas?")
-        assert d.course == "indefinido" and d.clarification == CLARIFICATION_COURSE
-    for intent in ("conteudo_tecnico", "meta", "exercicio_avaliativo", "fora_escopo", "manipulacao"):
-        d = routing.resolve_course(admin, conv, decision(intent, "indefinido"), "oi")
-        assert d.clarification is None
+        assert d.course == "indefinido"
+        assert "clarification" not in d.model_dump()
     conv.refresh_from_db()
     assert "course" not in conv.metadata
-
-
-@pytest.mark.parametrize("text", ["tanto faz...", "Os dois", "ambos", "qualquer um", "não importa"])
-def test_admin_que_nao_escolhe_curso_recebe_resposta_dos_dois(admin, text):
-    conv = Conversation.objects.create(user=admin)
-    d = routing.resolve_course(admin, conv, decision("info_institucional", "indefinido"), text)
-    assert d.course == "ambos" and d.clarification is None
 
 
 def test_ambos_vale_so_no_turno_e_nao_e_persistido(admin):
     conv = Conversation.objects.create(user=admin)
     d = routing.resolve_course(admin, conv, decision(), "compare CC e ADS")
-    assert d.course == "ambos" and d.clarification is None
+    assert d.course == "ambos"
     conv.refresh_from_db()
     assert "course" not in conv.metadata
 
@@ -294,11 +287,11 @@ def test_l0_curto_circuita_sem_chamar_l1(monkeypatch, student, conversation):
     assert d.intent == "manipulacao" and calls == []
 
 
-def test_admin_sem_curso_recebe_clarification_no_route(monkeypatch, admin):
+def test_admin_sem_curso_segue_direto_no_route(monkeypatch, admin):
     conv = Conversation.objects.create(user=admin)
     fake_l1(monkeypatch, l1_value(intent="grade_disciplinas", course="indefinido"))
     d, _ = routing.route(conv, "quais as disciplinas do curso?")
-    assert d.course == "indefinido" and d.clarification == CLARIFICATION_COURSE
+    assert d.course == "indefinido" and d.intent == "grade_disciplinas"
 
 
 def test_curso_persistido_alimenta_o_turno_seguinte(monkeypatch, admin):
@@ -308,7 +301,7 @@ def test_curso_persistido_alimenta_o_turno_seguinte(monkeypatch, admin):
     conv.refresh_from_db()
     assert conv.metadata["course"] == "ads"
     d, _ = routing.route(conv, "e o 2º semestre?")
-    assert d.course == "ads" and d.clarification is None
+    assert d.course == "ads"
 
 
 # ------------------------------------------------------------------- fallback

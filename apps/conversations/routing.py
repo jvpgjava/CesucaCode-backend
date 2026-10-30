@@ -43,11 +43,6 @@ Intent = Literal[
 CourseCode = Literal["cc", "ads", "ambos", "indefinido"]
 Complexity = Literal["direta", "composta"]
 
-CLARIFICATION_COURSE = (
-    "Você quer saber sobre Ciência da Computação (CC) ou Análise e Desenvolvimento de Sistemas (ADS)?"
-)
-# Intenções cuja resposta muda de um curso para o outro: só nelas vale perguntar o curso.
-COURSE_DEPENDENT_INTENTS = frozenset({"grade_disciplinas", "info_institucional"})
 _KNOWN_COURSES = ("cc", "ads")
 
 FOLLOWUP_MAX_WORDS = 6  # pergunta curta ("CC", "sim", "e o 2º semestre?") ganha o contexto anterior
@@ -61,13 +56,11 @@ class RouteDecision(BaseModel):
     course: CourseCode
     standalone_query: str
     complexity: Complexity
-    clarification: str | None = None
     source: Literal["l0", "l1", "fallback"] = "l1"
 
 
 class _L1Output(BaseModel):
-    """Schema pedido ao LLM: sem `source` (o código define) nem `clarification` (só
-    o código pergunta o curso, em `resolve_course`)."""
+    """Schema pedido ao LLM: sem `source` (o código define)."""
 
     intent: Intent = Field(description="Intenção da mensagem atual.")
     course: CourseCode = Field(
@@ -204,10 +197,6 @@ _MENTION_CC = re.compile(r"\bcc\b|ciencias? da computacao|ciencia da comp\b")
 _MENTION_ADS = re.compile(r"\bads\b|analise e desenvolvimento de sistemas|\banalise e desenv\b")
 
 
-# Resposta à pergunta de curso que não escolhe um ("tanto faz", "os dois"): vale como ambos.
-_ANSWER_BOTH = re.compile(r"^\W*(tanto faz|ambos|os dois|as duas|qualquer( um)?|nao importa|tudo)\W*$")
-
-
 def detect_course_mention(text: str) -> Literal["cc", "ads", "ambos"] | None:
     norm = _normalize(text)
     cc, ads = bool(_MENTION_CC.search(norm)), bool(_MENTION_ADS.search(norm))
@@ -264,11 +253,13 @@ def _profile_course(user) -> str | None:
 def resolve_course(user, conversation, decision: RouteDecision, text: str | None = None) -> RouteDecision:
     """Fixa o curso da decisão e persiste em `conversation.metadata["course"]`.
 
-    - Estudante: sempre o curso do perfil, nunca pergunta.
+    - Estudante: sempre o curso do perfil.
     - Coordenador de um curso só: esse curso.
     - Admin / coordenador de vários: menção explícita em `text` > curso já salvo na
-      conversa > decisão do L1 > "indefinido". Neste último caso, e só se a intenção
-      depende do curso, `clarification` traz a pergunta de CC ou ADS.
+      conversa > decisão do L1 > "indefinido". Nunca pergunta o curso: com
+      "indefinido" a busca não filtra por curso e a resposta cobre CC e ADS (o prompt
+      separa o que difere entre os cursos). Perguntar travava a conversa logo na
+      primeira mensagem.
     """
     fixed = _profile_course(user)
     metadata = conversation.metadata if isinstance(conversation.metadata, dict) else {}
@@ -279,19 +270,13 @@ def resolve_course(user, conversation, decision: RouteDecision, text: str | None
         stored = metadata.get("course")
         l1 = decision.course if decision.course != "indefinido" else None
         course = mention or (stored if stored in _KNOWN_COURSES else None) or l1 or "indefinido"
-        if course == "indefinido" and text and _ANSWER_BOTH.search(_normalize(text)):
-            course = "ambos"
-
-    clarification = None
-    if fixed is None and course == "indefinido" and decision.intent in COURSE_DEPENDENT_INTENTS:
-        clarification = CLARIFICATION_COURSE
 
     # "ambos" vale só para este turno; só um curso concreto fica gravado na conversa.
     if course in _KNOWN_COURSES and metadata.get("course") != course:
         conversation.metadata = {**metadata, "course": course}
         if conversation.pk:
             conversation.save(update_fields=["metadata"])
-    return decision.model_copy(update={"course": course, "clarification": clarification})
+    return decision.model_copy(update={"course": course})
 
 
 # ---------------------------------------------------------------------------

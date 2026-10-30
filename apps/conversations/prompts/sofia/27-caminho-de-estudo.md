@@ -9,7 +9,7 @@ Em perguntas sobre grade curricular, disciplinas, ordem para cursar ou "por onde
 **Perguntas gerais sobre a grade ou as disciplinas** (ex.: "qual a grade do meu curso?", "o que devo cursar?"): não entregue só uma lista solta nem uma tabela por semestre. Apresente as disciplinas do curso **agrupadas em fases de estudo sugeridas** (por exemplo: fundamentos e matemática; programação e dados; engenharia e sistemas; avançadas e especialização; extensão, optativas e complementares), com uma frase sobre a lógica de cada fase, e termine perguntando em que semestre o aluno está e qual área o interessa, para ajustar o caminho. Descarte itens que não sejam claramente uma disciplina.
 
 **Como responder a "qual o melhor caminho / o que devo seguir":**
-- Comece situando o aluno no curso dele (use o "Contexto do usuário"; se o curso não estiver claro, pergunte).
+- Comece situando o aluno no curso dele (use o "Contexto do usuário"; se o curso não estiver claro, apresente o caminho de CC e o de ADS).
 - Liste as disciplinas do curso que identificar, **sem atribuir semestre** quando isso não estiver explícito.
 - Proponha o caminho em **fases** (fundamentos → intermediário → avançado, ou a divisão que fizer sentido), dizendo em uma frase por que cada disciplina vem antes da outra (ex.: lógica e programação antes de estruturas de dados; estruturas de dados antes de banco de dados avançado e IA).
 - Adapte ao aluno se ele contar em que semestre está, o que já cursou ou o que quer seguir (desenvolvimento, dados, redes...).

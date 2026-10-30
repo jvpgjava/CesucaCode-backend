@@ -9,11 +9,11 @@
 #   question         mensagem enviada ao chat
 #   persona          student_cc | student_ads | admin | coordinator_cc
 #   history          (opcional) turnos prévios [{role: user|assistant, content}] para testar follow-up
-#   expect           resposta | sem_info | recusa | clarificacao
+#   expect           resposta | sem_info | recusa
 #   must_include     fatos-chave curtos; comparação sem acento/caixa; "a|b" = alternativas
 #   must_not_include (opcional) trechos que não podem aparecer
 #   retrieval_expect trechos (literais do material) que devem aparecer em algum chunk recuperado
-#   route_expect     (opcional) direta | composta | meta | recusa | pedagogica | clarificacao
+#   route_expect     (opcional) direta | composta | meta | recusa | pedagogica
 #   rubric           (opcional) instrução extra para o juiz (ex.: dar dicas, não a solução)
 #   tags             lista; a primeira é a área principal do caso
 #
@@ -680,20 +680,23 @@
   route_expect: meta
   tags: [meta]
 
-# ---------------------------------------------------------------- admin sem curso: precisa perguntar o curso
-- id: clar-grade-admin
+# ---------------------------------------------------------------- admin sem curso: responde direto, sem perguntar o curso
+- id: admin-sem-curso-grade
   question: Qual é a grade curricular do meu curso?
   persona: admin
-  expect: clarificacao
-  route_expect: clarificacao
-  tags: [clarificacao, admin]
+  expect: resposta
+  must_not_include: ["Você quer saber sobre Ciência da Computação (CC) ou"]
+  rubric: Não deve perguntar qual é o curso; deve responder direto, separando CC e ADS se o conteúdo diferir.
+  tags: [admin-sem-curso, admin]
 
-- id: clar-ordem-admin
-  question: Quais disciplinas eu devo cursar e em que ordem?
+- id: admin-sem-curso-avaliacao
+  question: Quando é a prova de IHC?
   persona: admin
-  expect: clarificacao
-  route_expect: clarificacao
-  tags: [clarificacao, admin]
+  expect: resposta
+  must_include: ["30/09|30 de setembro"]
+  must_not_include: ["Você quer saber sobre Ciência da Computação (CC) ou"]
+  rubric: Não deve perguntar qual é o curso; deve dar a data da A1 de IHC.
+  tags: [admin-sem-curso, admin]
 
 # ---------------------------------------------------------------- coordenador (curso vem dos cursos coordenados)
 - id: coord-optativas

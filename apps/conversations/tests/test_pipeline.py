@@ -25,7 +25,7 @@ from apps.conversations.events import (
 from apps.conversations.models import Conversation, Message
 from apps.conversations.pipeline import FollowUps, Sufficiency
 from apps.conversations.retrieval import RetrievedChunk
-from apps.conversations.routing import CLARIFICATION_COURSE, _L1Output
+from apps.conversations.routing import _L1Output
 
 from .fakes import ScriptedChatModel
 
@@ -216,29 +216,26 @@ def test_rota_recusa_por_fora_de_escopo_via_l1(conversation, env):
     assert not any(isinstance(e, SuggestionsEvent) for e in events)
 
 
-def test_admin_recebe_clarificacao_do_curso_sem_llm_de_resposta(admin_conversation, env):
+def test_admin_sem_curso_recebe_resposta_direta_sem_filtro_de_curso(admin_conversation, env):
+    """Nada de perguntar "CC ou ADS?": responde direto, buscando nos dois cursos."""
     env.l1 = l1("grade_disciplinas", query="grade curricular")
+    env.chunks = [chunk()]
 
     events = run(admin_conversation, "Qual é a grade curricular?")
 
-    assert events[1].route == "clarificacao"
-    assert text_of(events) == CLARIFICATION_COURSE
-    assert env.model_calls == [] and env.search_calls == []
-    assert not any(isinstance(e, SuggestionsEvent) for e in events)
+    assert events[1].route == "direta"
+    assert "Você quer saber sobre Ciência da Computação" not in text_of(events)
+    assert env.search_calls[0]["course_code"] is None  # sem filtro: CC e ADS
     assert isinstance(events[-1], DoneEvent)
-    answer = admin_conversation.messages.get(role="assistant")
-    assert answer.content == CLARIFICATION_COURSE
-    assert answer.trace.route == "clarificacao" and answer.trace.intent == "grade_disciplinas"
 
 
-def test_estudante_nunca_recebe_clarificacao(conversation, env):
+def test_estudante_busca_no_curso_do_perfil(conversation, env):
     env.l1 = l1("grade_disciplinas", query="grade curricular")
     env.chunks = [chunk()]
 
     events = run(conversation, "Qual é a grade curricular?")
 
     assert events[1].route == "direta"
-    assert CLARIFICATION_COURSE not in text_of(events)
     assert env.search_calls[0]["course_code"] == "cc" and env.search_calls[0]["curriculum"] is True
 
 
@@ -422,7 +419,7 @@ def test_followups_descarta_itens_que_vazam_vocabulario_interno(conversation, en
     assert [e for e in events if isinstance(e, SuggestionsEvent)][0].items == ["E a A2?"]
 
 
-def test_followups_omitidos_em_falha_flag_desligada_e_clarificacao(conversation, admin_conversation, env, settings):
+def test_followups_omitidos_em_falha_e_flag_desligada(conversation, env, settings):
     env.chunks = [chunk()]
     env.followups = None
     events = run(conversation, "Como funciona a avaliação?")
@@ -434,11 +431,6 @@ def test_followups_omitidos_em_falha_flag_desligada_e_clarificacao(conversation,
     events = run(conversation, "E a frequência?")
     assert not any(isinstance(e, SuggestionsEvent) for e in events)
     assert len(env.structured(FollowUps)) == calls_before
-
-    settings.CHAT_FOLLOWUPS_ENABLED = True
-    env.l1 = l1("grade_disciplinas")
-    events = run(admin_conversation, "Qual a grade?")
-    assert events[1].route == "clarificacao" and not any(isinstance(e, SuggestionsEvent) for e in events)
 
 
 def test_followups_omitidos_na_recusa_do_provedor(conversation, env):
@@ -586,16 +578,13 @@ def test_roteador_falho_usa_fallback_com_prompt_completo(conversation, env):
 
 
 def test_route_for_cobre_todas_as_intencoes(settings):
-    def d(intent, complexity="direta", clarification=None):
-        return routing.RouteDecision(
-            intent=intent, course="cc", standalone_query="q", complexity=complexity, clarification=clarification
-        )
+    def d(intent, complexity="direta"):
+        return routing.RouteDecision(intent=intent, course="cc", standalone_query="q", complexity=complexity)
 
     assert pipeline.route_for(d("meta")) == "meta"
     assert pipeline.route_for(d("fora_escopo")) == "recusa"
     assert pipeline.route_for(d("manipulacao")) == "recusa"
     assert pipeline.route_for(d("exercicio_avaliativo", "composta")) == "pedagogica"
-    assert pipeline.route_for(d("grade_disciplinas", clarification="?")) == "clarificacao"
     assert pipeline.route_for(d("conteudo_tecnico", "composta")) == "composta"
     settings.CHAT_AGENT_ENABLED = False
     assert pipeline.route_for(d("conteudo_tecnico", "composta")) == "direta"

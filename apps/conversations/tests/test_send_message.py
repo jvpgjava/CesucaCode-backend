@@ -50,7 +50,7 @@ def test_trace_com_tokens_e_ttft(conversation, fake_llm, settings):
     assert (trace.input_tokens, trace.output_tokens) == (12, 3)
     assert trace.ttft_ms is not None
     assert trace.models == {"answer": settings.LLM_MODEL}
-    assert [s["type"] for s in trace.steps] == ["routing", "retrieval", "llm"]
+    assert [s["type"] for s in trace.steps] == ["routing", "retrieval", "guard", "llm"]
     assert trace.pipeline_version == settings.PIPELINE_VERSION
 
 

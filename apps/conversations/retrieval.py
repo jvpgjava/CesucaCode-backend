@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank
-from django.db.models import F
+from django.db.models import Count, F
 from pgvector.django import CosineDistance
 
 from apps.ai_providers import services as ai_providers
@@ -34,6 +34,11 @@ CURRICULUM_EXTRA_DISTANCE = 0.05
 # Acerto textual por "qualquer termo" (consulta relaxada) é evidência fraca: só entra
 # se o trecho também não for semanticamente distante demais (cutoff + esta margem).
 RELAXED_TEXT_DISTANCE_MARGIN = 0.15
+# Documento pequeno (cronograma, horário: uma tabela partida em poucos chunks) que
+# aparece nos resultados entra inteiro: os chunks irmãos vêm junto, na ordem do
+# documento. Sem isso, a linha da A1 de um cronograma podia ficar de fora porque só o
+# pedaço com a A2 casou com a busca textual ("prova").
+SMALL_DOCUMENT_MAX_CHUNKS = 4
 # Mesmo a consulta textual estrita casa trechos semanticamente distantes (ex.: a
 # palavra "avaliação" em um plano de ensino qualquer). Um teto frouxo de distância
 # corta só o ruído grosseiro sem anular o ganho lexical da busca híbrida.
@@ -258,7 +263,51 @@ def search(
     ranked = [_to_chunk(rows_by_id[i], score=scores[i]) for i in sorted(scores, key=sort_key)]
     if settings.RAG_RERANK_ENABLED:
         ranked = rerank(query, ranked)
-    return ranked[:top_k]
+    return _with_small_document_siblings(queryset, ranked[:top_k], query_vector, max_distance)
+
+
+def _with_small_document_siblings(
+    queryset, chunks: list[RetrievedChunk], query_vector, max_distance: float
+) -> list[RetrievedChunk]:
+    """Acrescenta, logo depois do primeiro chunk de cada documento pequeno (até
+    `SMALL_DOCUMENT_MAX_CHUNKS`), os irmãos que ficaram de fora, na ordem do documento.
+    Só entram irmãos dentro do corte de distância (`max_distance`): um trecho
+    semanticamente distante continua fora, como na busca normal. Sem o vetor da
+    consulta (falha no embedding), não há expansão. Herdam o score do chunk que os
+    trouxe. Documentos grandes não mudam."""
+    if query_vector is None:
+        return chunks
+    if not chunks:
+        return chunks
+    present = {chunk.chunk_id for chunk in chunks}
+    doc_ids = {chunk.document_id for chunk in chunks}
+    small = {
+        row["document_id"]
+        for row in queryset.filter(document_id__in=doc_ids)
+        .values("document_id")
+        .annotate(n=Count("id"))
+        .filter(n__lte=SMALL_DOCUMENT_MAX_CHUNKS)
+    }
+    if not small:
+        return chunks
+    siblings: dict[int, list[dict]] = {}
+    candidates = (
+        queryset.filter(document_id__in=small)
+        .exclude(id__in=present)
+        .annotate(distance=CosineDistance("embedding", query_vector))
+        .filter(distance__lte=max_distance)
+        .order_by("index")
+        .values(*_FIELDS, "distance")
+    )
+    for row in candidates:
+        siblings.setdefault(row["document_id"], []).append(row)
+
+    result: list[RetrievedChunk] = []
+    for chunk in chunks:
+        result.append(chunk)
+        extra = siblings.pop(chunk.document_id, [])
+        result.extend(_to_chunk(row, score=chunk.score) for row in extra)
+    return result
 
 
 def rerank(query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:

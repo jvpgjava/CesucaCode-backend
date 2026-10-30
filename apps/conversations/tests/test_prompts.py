@@ -29,11 +29,11 @@ def test_base_entra_em_toda_intencao(intent):
 @pytest.mark.parametrize(
     ("intent", "expected"),
     [
-        ("grade_disciplinas", {"27-caminho-de-estudo.md"}),
+        ("grade_disciplinas", {"15-vida-academica.md", "27-caminho-de-estudo.md"}),
         ("meta", {"29-meta.md"}),
         ("conteudo_tecnico", {"30-pedagogia.md"}),
         ("exercicio_avaliativo", {"30-pedagogia.md", "35-escada-de-dicas.md"}),
-        ("info_institucional", set()),
+        ("info_institucional", {"15-vida-academica.md"}),
         ("fora_escopo", set()),
         ("manipulacao", set()),
     ],

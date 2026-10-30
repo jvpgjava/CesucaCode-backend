@@ -208,6 +208,13 @@ def test_admin_indefinido_pergunta_so_quando_a_intencao_depende_do_curso(admin):
     assert "course" not in conv.metadata
 
 
+@pytest.mark.parametrize("text", ["tanto faz...", "Os dois", "ambos", "qualquer um", "não importa"])
+def test_admin_que_nao_escolhe_curso_recebe_resposta_dos_dois(admin, text):
+    conv = Conversation.objects.create(user=admin)
+    d = routing.resolve_course(admin, conv, decision("info_institucional", "indefinido"), text)
+    assert d.course == "ambos" and d.clarification is None
+
+
 def test_ambos_vale_so_no_turno_e_nao_e_persistido(admin):
     conv = Conversation.objects.create(user=admin)
     d = routing.resolve_course(admin, conv, decision(), "compare CC e ADS")

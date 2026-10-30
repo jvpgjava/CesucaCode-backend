@@ -16,6 +16,7 @@ from django.conf import settings
 
 # Arquivo -> intenções em que ele entra. Fácil de auditar: o que não aparece aqui é base.
 ROUTE_MODULES: dict[str, frozenset[str]] = {
+    "15-vida-academica.md": frozenset({"info_institucional", "grade_disciplinas"}),
     "27-caminho-de-estudo.md": frozenset({"grade_disciplinas"}),
     "29-meta.md": frozenset({"meta"}),
     "30-pedagogia.md": frozenset({"conteudo_tecnico", "exercicio_avaliativo"}),

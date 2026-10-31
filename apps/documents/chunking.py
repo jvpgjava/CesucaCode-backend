@@ -28,12 +28,14 @@ from docling_core.types.doc import ContentLayer
 from docling_core.types.doc.document import (
     DoclingDocument,
     PictureItem,
+    RefItem,
     SectionHeaderItem,
+    TableItem,
     TextItem,
     TitleItem,
 )
 
-from . import cleaning, disciplinas
+from . import cleaning, disciplinas, meses
 
 DEFAULT_MAX_CHARS = 1500
 DEFAULT_OVERLAP = 200
@@ -140,24 +142,68 @@ def chunk_docling_document(
     cleaning.mark_boilerplate_items(document)
     cleaning.mark_header_only_tables(document)
     contexts = disciplinas.prepare_document(document)
+    months = meses.prepare_document(document)  # calendário: coluna "MÊS" nas tabelas
 
     chunks: list[Chunk] = []
     for doc_chunk in chunker.chunk(document):
-        # Rede de segurança: itens com várias linhas (OCR) escapam da checagem por item.
-        text = cleaning.clean_text(doc_chunk.text, repeated_footer=False).strip()
-        if not text:
-            continue
+        headings = doc_chunk.meta.headings or []
         items = list(doc_chunk.meta.doc_items or [])
-        ctx = contexts.get(items[0].self_ref) if items else None
-        headings = [h for h in (doc_chunk.meta.headings or []) if not cleaning.is_boilerplate_heading(h)]
-        if ctx is not None:
-            headings = [ctx.nome, *[h for h in headings if h != ctx.header_text and h != ctx.nome]]
-            if items and all(i.self_ref in ctx.member_refs for i in items):
-                text = ctx.summary()  # o texto grudado do cabeçalho vira linhas legíveis
-        if title and title not in headings:
-            headings = [title, *headings]
-        chunks.append(Chunk(content=text, heading=" > ".join(headings), discipline=ctx))
+        for text, items, month in _split_by_month(document, doc_chunk.text, items, months):
+            # Rede de segurança: itens com várias linhas (OCR) escapam da checagem por item.
+            text = cleaning.clean_text(text, repeated_footer=False).strip()
+            if text:
+                chunks.append(_build_chunk(text, items, headings, title=title, contexts=contexts, month=month))
     return chunks
+
+
+def _split_by_month(
+    document: DoclingDocument, text: str, items: list, months: dict[str, str]
+) -> list[tuple[str, list, str]]:
+    """Calendário (ver meses.py): um chunk que atravessa meses vira um pedaço por mês, com
+    o mês no heading. O chunker junta itens pequenos vizinhos (a legenda de um mês, as
+    linhas soltas de outro, uma tabela curta), então o corte é no texto do chunk, onde
+    começa cada item. Tabela vira pedaço próprio e sem mês no heading: as linhas dela já
+    levam o mês na coluna "MÊS"."""
+    if not months or not items:
+        return [(text, items, "")]
+    # O meta do chunk guarda cópias genéricas (`DocItem`, sem texto): o item de verdade
+    # vem do documento.
+    resolved = [RefItem(cref=i.self_ref).resolve(document) for i in items]
+    runs: list[tuple[str | None, list, int]] = []  # (mês ou None p/ tabela, itens, início)
+    cursor = 0
+    for item in resolved:
+        if isinstance(item, TableItem):
+            key, start = None, cursor  # o texto da tabela vem logo depois do item anterior
+        elif isinstance(item, TextItem) and item.text:
+            start = text.find(item.text, cursor)
+            if start < 0:  # texto reformatado pelo serializador: não arrisca o corte
+                return [(text, items, "")]
+            key, cursor = months.get(item.self_ref, ""), start + len(item.text)
+        else:  # figura vazia: fica no pedaço corrente
+            key, start = (runs[-1][0] if runs else ""), cursor
+        if runs and runs[-1][0] == key:
+            runs[-1][1].append(item)
+        else:
+            runs.append((key, [item], start))
+    bounds = [0, *[start for _, _, start in runs[1:]], len(text)]
+    return [
+        (text[begin:end], run_items, key or "")
+        for (key, run_items, _), begin, end in zip(runs, bounds, bounds[1:])
+    ]
+
+
+def _build_chunk(text: str, items: list, headings: list[str], *, title: str, contexts, month: str) -> Chunk:
+    ctx = contexts.get(items[0].self_ref) if items else None
+    headings = [h for h in headings if not cleaning.is_boilerplate_heading(h)]
+    if ctx is not None:
+        headings = [ctx.nome, *[h for h in headings if h != ctx.header_text and h != ctx.nome]]
+        if items and all(i.self_ref in ctx.member_refs for i in items):
+            text = ctx.summary()  # o texto grudado do cabeçalho vira linhas legíveis
+    if title and title not in headings:
+        headings = [title, *headings]
+    if month and month not in headings:
+        headings = [*headings, month]
+    return Chunk(content=text, heading=" > ".join(headings), discipline=ctx)
 
 
 def document_title(document: DoclingDocument) -> str:

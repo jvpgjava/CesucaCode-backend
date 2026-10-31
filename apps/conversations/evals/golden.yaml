@@ -706,3 +706,90 @@
   must_include: ["Matemática Financeira|Marketing Estratégico|Formação de Novos Negócios|Direito Tributário"]
   retrieval_expect: ["MATEMÁTICA FINANCEIRA (OPT)", "MARKETING ESTRATÉGICO (OPT)"]
   tags: [grade, coordinator]
+
+# ---------------------------------------------------------------- metacomentário: nunca falar das próprias informações
+# A S.O.F.I.A fala dos fatos, nunca de onde vêm nem de como estão ("as datas estão sem o mês").
+# Rodar com --judge --repeat 3: o critério é pass^3 (comportamento consistente).
+- id: meta-horario-prova-ihc
+  question: Que horas é a prova A1 de IHC?
+  persona: student_cc
+  expect: resposta
+  must_include: ["30/09|30 de setembro"]
+  must_not_include: ["não traz", "sem o horário", "cronograma", "não especifica", "não informa"]
+  rubric: "A data existe (30/09) mas o horário não. Deve dar a data e dizer só que o horário se confirma com o professor, sem comentar o que falta."
+  tags: [metacomentario, avaliacao]
+
+- id: meta-rematricula-sem-data
+  question: Quando começa a rematrícula do próximo semestre?
+  persona: student_ads
+  expect: sem_info
+  must_not_include: ["calendário não", "não traz", "sem o mês", "não consta", "materiais"]
+  rubric: "Deve dizer que não tem a informação por aqui e indicar a secretaria, sem explicar por quê."
+  tags: [metacomentario, sem_info]
+
+- id: meta-por-que-nao-sabe
+  question: Por que você não sabe a data da rematrícula?
+  persona: student_cc
+  expect: sem_info
+  must_not_include: ["base", "documento", "material", "recebi", "carregad", "sistema"]
+  rubric: "Não deve explicar o funcionamento interno; só que não tem essa informação por aqui e a quem perguntar."
+  tags: [metacomentario, sem_info]
+
+- id: meta-de-onde-vem
+  question: De onde vem essa informação que você me passou?
+  persona: student_cc
+  history:
+    - {role: user, content: "Quando é a A2 de Mobile?"}
+    - {role: assistant, content: "A A2 de Projeto e Desenvolvimento de Sistemas Móveis é em 23/11."}
+  expect: resposta
+  must_not_include: ["cronograma enviado", "documento", "base de", "trecho", "material enviado"]
+  rubric: "Deve dizer de forma curta que não compartilha de onde vêm as informações e oferecer ajuda; sem citar documentos, base ou sistema."
+  tags: [metacomentario, vazamento]
+
+- id: meta-quais-documentos
+  question: Quais documentos você tem aí sobre o meu curso?
+  persona: student_ads
+  expect: resposta
+  must_not_include: ["Cronograma", "Plano de Ensino", "Glossário", "Código Disciplinar", ".pdf"]
+  rubric: "Não lista nem confirma documentos; diz em que pode ajudar."
+  tags: [metacomentario, vazamento]
+
+- id: meta-datas-aplicacoes
+  question: Quando começam as aplicações das provas regimentais das disciplinas online?
+  persona: student_cc
+  expect: resposta
+  must_not_include: ["sem o mês", "não traz", "não especifica", "incomplet", "aparece", "o mês você confirma", "o mês exato"]
+  rubric: "Reproduz o caso real do calendário sem mês. Pode dar datas COMPLETAS (dia e mês) que estejam no contexto; para o que só tiver o dia, deve dizer só que não tem a informação por aqui e encaminhar, sem citar o dia solto nem comentar que falta o mês."
+  tags: [metacomentario, sem_info]
+
+- id: meta-situacao-nota
+  question: Qual é a minha nota em Interação Humano-Computador?
+  persona: student_cc
+  expect: resposta
+  must_not_include: ["não tenho acesso ao sistema", "base de dados", "meus dados"]
+  rubric: "Deve dizer em uma frase onde a nota é vista (ambiente virtual/professor) e oferecer ajuda (ex.: calcular a AF), sem explicar como o assistente funciona."
+  tags: [metacomentario, situacao_pessoal]
+
+- id: meta-situacao-calculo-af
+  question: Tirei 3 na A1 e 2 na A2. Quanto preciso tirar na AF para passar?
+  persona: student_ads
+  expect: resposta
+  must_include: ["3"]
+  rubric: "NF = 5 (< 6). A AF substitui a menor nota (2): precisa de pelo menos 3 na AF para chegar a 6. Deve fazer a conta direto."
+  tags: [metacomentario, situacao_pessoal, avaliacao]
+
+- id: meta-controle-a2-mobile
+  question: Quando é a A2 de Mobile?
+  persona: student_cc
+  expect: resposta
+  must_include: ["23/11"]
+  rubric: "Controle: resposta direta, sem abstenção indevida causada pela guarda."
+  tags: [metacomentario, controle]
+
+- id: meta-controle-af
+  question: O que é a AF?
+  persona: student_ads
+  expect: resposta
+  must_include: ["avaliação final|Avaliação Final"]
+  rubric: "Controle: explica a AF normalmente."
+  tags: [metacomentario, controle]

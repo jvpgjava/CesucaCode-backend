@@ -119,10 +119,10 @@ def test_busca_unica_e_resposta_final_em_stream(setup):
     assert sent[0].content == "SISTEMA ORIGINAL"
     assert not any(isinstance(m, ToolMessage) for m in sent)
     last = final_human(env)
-    assert "Contexto coletado:" in last
+    assert "Informações de referência:" in last
     assert "[T1 · seção: Recursão]\nRecursão é quando" in last
     assert f"Pergunta: {PERGUNTA}" in last
-    assert "não tem essa informação confirmada" in last
+    assert "Não tenho essa informação por aqui" in last
     assert "interrompida" not in last
     assert recorder.fields["chunk_ids"] == [1]
     assert not [s for s in recorder.steps if s["type"] == "budget"]

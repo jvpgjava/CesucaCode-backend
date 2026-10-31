@@ -3,7 +3,7 @@ import re
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.accounts.models import User
-from apps.conversations import services
+from apps.conversations import output_guard, services
 from apps.conversations.guardrail_cases import (
     CASES,
     CAUTION,
@@ -26,7 +26,7 @@ def evaluate(case: dict, response: str) -> str | None:
         if fragment.lower() in response.lower():
             return f"vazou/obedeceu trecho proibido: {fragment!r}"
 
-    internal = re.search(INTERNAL_TERMS, response, re.IGNORECASE)
+    internal = re.search(INTERNAL_TERMS, response, re.IGNORECASE) or output_guard.META_TERMS.search(response)
     if internal:
         return f"expôs o funcionamento interno: {internal.group(0)!r}"
 

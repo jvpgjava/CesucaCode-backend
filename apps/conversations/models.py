@@ -71,6 +71,7 @@ class MessageTrace(TimeStampedModel):
     class RouteSource(models.TextChoices):
         L0 = "l0", "Regras (L0)"
         L1 = "l1", "Modelo (L1)"
+        LOW_CONFIDENCE = "baixa_confianca", "Modelo (L1) com baixa confiança"
         FALLBACK = "fallback", "Fallback"
         LEGACY = "legacy", "Pipeline legado"
 

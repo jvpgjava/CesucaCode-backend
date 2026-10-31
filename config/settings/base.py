@@ -245,3 +245,9 @@ CHAT_ROUTER_ENABLED = env.bool("CHAT_ROUTER_ENABLED", default=True)
 # - Follow-ups: até 3 perguntas de continuação (evento SSE `suggestions`) depois da resposta.
 CHAT_SUFFICIENCY_CHECK_ENABLED = env.bool("CHAT_SUFFICIENCY_CHECK_ENABLED", default=True)
 CHAT_FOLLOWUPS_ENABLED = env.bool("CHAT_FOLLOWUPS_ENABLED", default=True)
+# Guarda de saída em blocos validados (apps/conversations/output_guard.py): o texto só
+# chega ao aluno depois de conferido (regex + juiz LLM pequeno, papel "router").
+CHAT_OUTPUT_GUARD_ENABLED = env.bool("CHAT_OUTPUT_GUARD_ENABLED", default=True)
+CHAT_GUARD_JUDGE_ENABLED = env.bool("CHAT_GUARD_JUDGE_ENABLED", default=True)
+# Abaixo desta confiança do roteador L1, o prompt vai completo (sem módulos por intenção).
+CHAT_ROUTER_MIN_CONFIDENCE = env.float("CHAT_ROUTER_MIN_CONFIDENCE", default=0.6)

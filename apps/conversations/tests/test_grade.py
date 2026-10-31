@@ -115,7 +115,7 @@ def test_formato_agrupa_por_semestre_e_nao_cita_documento(grade_data, student):
 
     assert "1º semestre:\n- Algoritmos e Programação (72 h)\n- Teoria da Computação (72 h)" in text
     assert "5º semestre:\n- Banco de Dados (72 h)" in text
-    assert "planos de ensino disponíveis" in text and "período letivo" in text
+    assert grade.GRADE_SOURCE_NOTE in text and "período letivo" in text
     assert "Planos de Ensino de Ciência da Computação" not in text and ".md" not in text
     assert grade.grade_text(student, semestre=11) == ""
 
@@ -132,7 +132,7 @@ def test_tool_consultar_grade_usa_o_curso_da_conversa_e_respeita_permissoes(grad
     out = build(student)["consultar_grade"].invoke({})
 
     assert "- Modelagem de Dados (80 h)" in out and "- Desenvolvimento Web" not in out
-    assert "planos de ensino disponíveis" in out
+    assert grade.GRADE_SOURCE_NOTE in out
 
 
 def test_tool_consultar_grade_filtra_semestre_e_curso(grade_data, admin):
@@ -296,7 +296,7 @@ def test_agente_tecnico_ou_misto_explica_com_conhecimento_geral(intent, settings
     text = final_text(intent, settings=settings)
     assert agent._INSTITUTIONAL_RULE in text  # fato da instituição continua exigindo evidência
     assert agent._TECHNICAL_RULE in text and "Não se recuse a explicar" in text
-    assert "não tem essa informação confirmada" in text
+    assert "Não tenho essa informação por aqui" in text
 
 
 @pytest.mark.parametrize("intent", ["conteudo_tecnico", None, "info_institucional"])

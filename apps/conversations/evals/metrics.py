@@ -9,7 +9,7 @@ import math
 import re
 import unicodedata
 
-from apps.conversations.guard import check_output
+from apps.conversations.output_guard import regex_flags
 from apps.conversations.guardrail_cases import NO_INFO, REFUSAL
 
 # ---------------------------------------------------------------- normalização
@@ -121,7 +121,11 @@ def score_case(
     must_frac, missing = must_include_score(case.get("must_include", []), response)
     forbidden = must_not_hits(case.get("must_not_include", []), response)
     hit, recall = retrieval_score(case.get("retrieval_expect", []), chunk_texts)
-    leak_flags = check_output(response, document_titles=document_titles)
+    # Mesma regex da guarda de saída em produção (vocabulário interno + metacomentário),
+    # mais o veredito do juiz quando houver.
+    leak_flags = regex_flags(response, document_titles)
+    if judge and judge.get("expoe_interno") == "sim":
+        leak_flags = [*leak_flags, "judge:expoe_interno"]
 
     refused = looks_like_refusal(response)
     abstained = looks_like_abstention(response)
@@ -151,6 +155,8 @@ def score_case(
             ok = judge["abstained"] and judge["faithfulness"] >= JUDGE_CORRECT_THRESHOLD
         elif expect == "recusa":
             ok = judge["abstained"] or refused
+    if leak_flags:
+        ok = False  # expor o interno reprova qualquer caso, mesmo com os fatos certos
 
     return {
         "must_include_frac": must_frac,
@@ -200,6 +206,19 @@ def _round(value, digits=4):
     return None if value is None else round(value, digits)
 
 
+def pass_k(results: list[dict]) -> dict | None:
+    """pass^k: fração de casos em que TODAS as k repetições passaram (comportamento
+    consistente, não "acertou alguma vez"). None se nenhum caso foi repetido."""
+    trials: dict[str, list[bool]] = {}
+    for r in results:
+        trials.setdefault(r["id"], []).append(bool(r["ok"]))
+    repeated = {case_id: oks for case_id, oks in trials.items() if len(oks) > 1}
+    if not repeated:
+        return None
+    k = min(len(oks) for oks in repeated.values())
+    return {"k": k, "rate": _round(sum(all(oks) for oks in repeated.values()) / len(repeated)), "n": len(repeated)}
+
+
 def summarize(results: list[dict]) -> dict:
     """Agrega uma lista de resultados por caso (formato de `runner.run_case`)."""
     judged = [r["judge"] for r in results if r.get("judge")]
@@ -217,6 +236,8 @@ def summarize(results: list[dict]) -> dict:
         "retrieval_hit_rate": _round(_rate(r["retrieval_hit"] for r in results)),
         "retrieval_recall_mean": _round(_mean(r["retrieval_recall"] for r in results)),
         "leak_rate": _round(_rate(r["leak"] for r in results)),
+        "tone_ok_rate": _round(_rate(j.get("tom_adequado") == "sim" for j in judged if j.get("tom_adequado") != "incerto")),
+        "pass_k": pass_k(results),
         "route_ok_rate": _round(_rate(r["route_ok"] for r in results)),
         "judged": len(judged),
         "correctness_mean": _round(_mean(j["correctness"] for j in judged)),

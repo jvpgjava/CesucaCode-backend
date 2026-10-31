@@ -12,7 +12,7 @@ import pytest
 from apps.accounts.models import User
 from apps.ai_providers import services as ai_providers
 from apps.ai_providers.services import StructuredResult
-from apps.conversations import agent, pipeline, prompts, retrieval, routing, services, web_search
+from apps.conversations import agent, output_guard, pipeline, prompts, retrieval, routing, services, web_search
 from apps.conversations.agent import AgentUnavailable
 from apps.conversations.events import (
     DoneEvent,
@@ -46,7 +46,9 @@ class Env:
 
     def __init__(self, monkeypatch):
         self.l1: _L1Output | None = l1()  # None = o roteador L1 falha (cai no fallback)
-        self.sufficiency: bool | None = True  # None = a checagem falha
+        # True/False ou o nível ("suficiente", "parcial", "insuficiente"); None = a checagem falha
+        self.sufficiency: bool | str | None = True
+        self.guard_verdict: bool | None = False  # juiz da guarda de saída: True = expõe o interno
         self.followups: list[str] | None = ["Como é a avaliação da A2?", "Qual a frequência mínima?"]
         self.chunks: list[RetrievedChunk] = []
         self.model = ScriptedChatModel(pieces=["A média ", "é 7."], usage=ANSWER_USAGE)
@@ -64,7 +66,10 @@ class Env:
             if schema is _L1Output:
                 value = self.l1
             elif schema is Sufficiency:
-                value = None if self.sufficiency is None else Sufficiency(suficiente=self.sufficiency)
+                level = {True: "suficiente", False: "insuficiente"}.get(self.sufficiency, self.sufficiency)
+                value = None if self.sufficiency is None else Sufficiency(nivel=level)
+            elif schema is output_guard.GuardVerdict:
+                value = None if self.guard_verdict is None else output_guard.GuardVerdict(expoe_interno=self.guard_verdict)
             elif schema is FollowUps:
                 value = None if self.followups is None else FollowUps(items=self.followups)
             else:
@@ -115,6 +120,8 @@ def env(monkeypatch, settings):
     settings.CHAT_FOLLOWUPS_ENABLED = True
     settings.CHAT_ALLOW_GENERAL_KNOWLEDGE = True
     settings.CHAT_WEB_SEARCH_ENABLED = False
+    settings.CHAT_OUTPUT_GUARD_ENABLED = True
+    settings.CHAT_GUARD_JUDGE_ENABLED = True  # o juiz é simulado pelo Env (guard_verdict)
     return Env(monkeypatch)
 
 
@@ -269,7 +276,7 @@ def test_rota_pedagogica_usa_escada_de_dicas_sem_suficiencia(conversation, env):
 def fake_agent(monkeypatch, *, pieces=("Resposta ", "do agente."), chunks=(), raises=None, fail_after_call=None):
     calls = []
 
-    def run_agent(*, user, messages, course_code, registry, budget, recorder=None, intent=None):
+    def run_agent(*, user, messages, course_code, registry, budget, recorder=None, intent=None, **kwargs):
         calls.append({"messages": messages, "course_code": course_code, "intent": intent})
         if raises is not None:
             raise raises
@@ -359,7 +366,7 @@ def test_contexto_insuficiente_acrescenta_instrucao_de_nao_inventar(conversation
     assert "checking" in steps_of(events)
     check = env.structured(Sufficiency)[0]
     assert check["role"] == "router" and "A média é 7." in check["messages"][-1].content
-    assert [s for s in trace_of(conversation).steps if s["name"] == "sufficiency"][0]["suficiente"] is False
+    assert [s for s in trace_of(conversation).steps if s["name"] == "sufficiency"][0]["nivel"] == "insuficiente"
 
 
 def test_contexto_suficiente_ou_checagem_com_falha_nao_altera_o_prompt(conversation, env):
@@ -452,8 +459,9 @@ def test_guarda_redige_ref_vazada_e_registra_flag(conversation, env):
 
     events = run(conversation, "Como funciona a avaliação?")
 
-    assert "[T1]" in text_of(events)  # já foi transmitido
+    assert "[T1]" not in text_of(events)  # a guarda em blocos remove antes de transmitir
     answer = conversation.messages.get(role="assistant")
+    assert answer.content == text_of(events)
     assert answer.content == "A média é 7 e a frequência é 75%."
     assert "ref_leak" in answer.trace.guard_flags
 
@@ -485,12 +493,15 @@ def test_erro_do_llm_emite_error_e_nao_done(conversation, env):
 def test_desconexao_do_cliente_salva_texto_parcial(conversation, env):
     env.model = ScriptedChatModel(pieces=["Uma ", "pilha ", "é LIFO."])
     gen = services.send_message(conversation, "Como funciona a avaliação?")
+    shown = ""
     for event in gen:
-        if isinstance(event, TokenEvent) and event.content.startswith("pilha"):
+        if isinstance(event, TokenEvent):
+            shown += event.content
             break
     gen.close()
 
-    assert conversation.messages.get(role="assistant").content == "Uma pilha "
+    # Salva exatamente o que chegou a ser mostrado (os blocos já liberados pela guarda).
+    assert shown and conversation.messages.get(role="assistant").content == shown
 
 
 def test_regenerate_apaga_o_par_anterior(conversation, env):
@@ -521,13 +532,13 @@ def test_trace_preenchido(conversation, env, settings):
         "direta", "info_institucional", "l1", "cc",
     )
     assert trace.models == {"router": "fake-router", "answer": "fake-answer"}
-    # roteador (10/5) + suficiência (10/5) + resposta (100/20) + follow-ups (10/5)
-    assert (trace.input_tokens, trace.output_tokens) == (130, 35)
+    # roteador (10/5) + suficiência (10/5) + resposta (100/20) + juiz da guarda (10/5) + follow-ups (10/5)
+    assert (trace.input_tokens, trace.output_tokens) == (140, 40)
     assert trace.ttft_ms is not None and trace.latency_ms >= trace.ttft_ms
     assert trace.chunk_ids == [5, 6] and trace.distances == [0.1235, 0.2]
     assert [(s["type"], s["name"]) for s in trace.steps] == [
         ("routing", "route"), ("retrieval", "search"), ("llm", "sufficiency"),
-        ("llm", "answer_stream"), ("llm", "followups"),
+        ("guard", "output"), ("llm", "answer_stream"), ("llm", "followups"),
     ]
     assert trace.steps[0]["intent"] == "info_institucional" and trace.steps[0]["source"] == "l1"
     assert trace.guard_flags == [] and trace.error == ""
@@ -541,6 +552,7 @@ def test_variante_v0_sem_chamadas_estruturadas_e_prompt_completo(conversation, e
     settings.CHAT_AGENT_ENABLED = False
     settings.CHAT_SUFFICIENCY_CHECK_ENABLED = False
     settings.CHAT_FOLLOWUPS_ENABLED = False
+    settings.CHAT_OUTPUT_GUARD_ENABLED = False
     env.chunks = [chunk()]
 
     events = run(conversation, "Quais disciplinas tem no semestre?")  # regex de grade da v0
@@ -607,3 +619,37 @@ def test_registry_ref_nao_vaza_titulo_no_contexto(conversation, env):
     run(conversation, "Como funciona a avaliação?")
 
     assert "Código Disciplinar" not in env.last_prompt and "Origem" not in env.last_prompt
+
+
+# --- guarda de saída em blocos --------------------------------------------------------
+
+
+def test_caso_real_do_calendario_nunca_chega_ao_aluno_nem_ao_historico(conversation, env):
+    """O modelo gera o metacomentário real; o aluno recebe (e o histórico guarda) a
+    abstenção padrão, nunca "as datas estão sem o mês"."""
+    env.chunks = [chunk()]
+    env.model = ScriptedChatModel(
+        pieces=["As datas do calendário estão sem o mês, ", "então não consigo dizer com segurança quando começa. "],
+        usage=ANSWER_USAGE,
+    )
+    events = run(conversation, "Quando começam as aplicações?")
+
+    shown = text_of(events)
+    assert "sem o mês" not in shown and shown.startswith(services.ABSTENTION_PHRASE)
+    saved = conversation.messages.get(role="assistant").content
+    assert saved == shown
+    guard_step = [s for s in trace_of(conversation).steps if s["name"] == "output"][0]
+    assert guard_step["replaced"] == 1
+
+
+def test_resposta_limpa_sai_igual(conversation, env):
+    env.chunks = [chunk()]
+    events = run(conversation, "Como funciona a avaliação?")
+    assert text_of(events) == "A média é 7."
+
+
+def test_contexto_parcial_acrescenta_nota_sem_descrever_a_falta(conversation, env):
+    env.chunks = [chunk()]
+    env.sufficiency = "parcial"
+    run(conversation, "Quando é a A1 e a A2?")
+    assert env.last_prompt.rstrip().endswith(pipeline.PARTIAL_NOTE)

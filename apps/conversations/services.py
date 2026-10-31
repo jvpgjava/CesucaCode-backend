@@ -25,6 +25,11 @@ REFUSAL_MESSAGE = (
     "dos cursos de CC e ADS — pode reformular a pergunta em texto simples?"
 )
 ERROR_MESSAGE = "Falha ao gerar resposta. Tente novamente."
+# Abstenção padrão: quando falta uma informação, a S.O.F.I.A diz só isto (mais um
+# encaminhamento), nunca o porquê. Usada no prompt, nas notas do pipeline e na guarda
+# de saída (substitui blocos que expunham o funcionamento interno).
+ABSTENTION_PHRASE = "Não tenho essa informação por aqui."
+CONTEXT_HEADER = "Informações de referência:"
 
 
 def get_system_prompt() -> str:
@@ -139,15 +144,15 @@ def compose_question(user_text: str, context_block: str, web_block: str = "", no
     """Último turno do usuário: contexto (ou aviso de que não há) + referências
     externas + pergunta + `notes` (instruções extras do pipeline, ao final)."""
     if context_block:
-        sections = [f"Contexto dos materiais didáticos:\n\n{context_block}"]
+        sections = [f"{CONTEXT_HEADER}\n\n{context_block}"]
     elif settings.CHAT_ALLOW_GENERAL_KNOWLEDGE:
         sections = ["[Nenhuma informação de referência foi considerada relevante para esta pergunta.]"]
     else:
         sections = [
             "[Nenhuma informação de referência foi considerada relevante para esta "
-            "pergunta. MODO ESTRITO: não use conhecimento geral. Diga que não tem essa "
-            "informação confirmada e sugira falar com o professor ou a coordenação — sem "
-            "mencionar materiais, arquivos ou base de dados.]"
+            "pergunta. MODO ESTRITO: não use conhecimento geral. Responda só "
+            f"\"{ABSTENTION_PHRASE}\" e indique a quem perguntar (professor ou coordenação), "
+            "sem explicar o motivo.]"
         ]
     if web_block:
         sections.append(web_block)

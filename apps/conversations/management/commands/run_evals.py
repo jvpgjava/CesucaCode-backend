@@ -27,6 +27,8 @@ class Command(BaseCommand):
         parser.add_argument("--id", action="append", dest="ids",
                             help="Só este id (repetível; aceita prefixo com '*', ex.: aval-*).")
         parser.add_argument("--limit", type=int, help="Roda só os N primeiros casos (depois dos filtros).")
+        parser.add_argument("--repeat", type=int, default=1,
+                            help="Roda cada caso k vezes e reporta o pass^k (todas as k passaram).")
         parser.add_argument("--judge", action=argparse.BooleanOptionalAction, default=False,
                             help="Liga o LLM-judge (papel 'judge'): correção, fidelidade e abstenção. Padrão: --no-judge.")
         parser.add_argument("--out", default=str(report.DEFAULT_OUT_DIR),
@@ -60,7 +62,7 @@ class Command(BaseCommand):
         started = datetime.now()
         with runner.variant_settings(variant):
             flags = runner.effective_flags()
-            results = runner.run_cases(cases, judge=use_judge, progress=self._progress)
+            results = runner.run_cases(cases, judge=use_judge, progress=self._progress, repeat=opts["repeat"])
 
         summary = build_summary(results)
         data = {
@@ -70,7 +72,7 @@ class Command(BaseCommand):
                 "duration_s": round((datetime.now() - started).total_seconds(), 1),
                 "judge": use_judge,
                 "n_cases": len(results),
-                "filters": {"tag": opts["tag"], "id": opts["ids"], "limit": opts["limit"]},
+                "filters": {"tag": opts["tag"], "id": opts["ids"], "limit": opts["limit"], "repeat": opts["repeat"]},
                 "flags": flags,
                 "models": {
                     "answer": getattr(settings, "LLM_ANSWER_MODEL", "") or settings.LLM_MODEL,
@@ -96,7 +98,10 @@ class Command(BaseCommand):
         self.stdout.write(f"JSON: {json_path}")
         self.stdout.write(f"CSV:  {csv_path}")
 
-        failed = [r["id"] for r in results if not r["ok"]]
+        if summary["overall"].get("pass_k"):
+            pk = summary["overall"]["pass_k"]
+            self.stdout.write(f"pass^{pk['k']}: {pk['rate']} ({pk['n']} caso(s) repetidos)")
+        failed = sorted({r["id"] for r in results if not r["ok"]})
         if failed:
             self.stdout.write(self.style.WARNING(f"{len(failed)} caso(s) fora da expectativa: {', '.join(failed)}"))
         if opts["strict"]:

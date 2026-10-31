@@ -64,3 +64,10 @@ def fake_llm(monkeypatch):
     monkeypatch.setattr(services, "retrieve_context", lambda *a, **k: [])
     monkeypatch.setattr(retrieval, "search", lambda *a, **k: [])
     return configure
+
+
+@pytest.fixture(autouse=True)
+def guard_judge_off(settings):
+    """O juiz LLM da guarda de saída chamaria o provedor de verdade: desligado por padrão
+    nos testes (a regex continua valendo). Quem simula `invoke_structured` liga de novo."""
+    settings.CHAT_GUARD_JUDGE_ENABLED = False

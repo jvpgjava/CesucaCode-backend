@@ -15,8 +15,8 @@ from .disciplinas import normalize_key, period_key
 from .models import Disciplina
 
 GRADE_SOURCE_NOTE = (
-    "Lista extraída dos planos de ensino disponíveis. O semestre e a carga horária podem variar "
-    "conforme o período letivo do plano (vale o mais recente de cada disciplina): confirme com a coordenação."
+    "O semestre e a carga horária podem variar conforme o período letivo (vale o mais recente de cada "
+    "disciplina): oriente a confirmar com a coordenação."
 )
 
 

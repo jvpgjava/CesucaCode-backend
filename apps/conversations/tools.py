@@ -32,10 +32,10 @@ MAX_QUERY_CHARS = 300
 _REF_PATTERN = re.compile(r"^T\d+$")
 
 GRADE_EMPTY_MESSAGE = (
-    "Nenhuma disciplina cadastrada para esse filtro. Use buscar_materiais para procurar nos materiais "
-    "e, se não houver nada, diga que não tem essa informação confirmada."
+    "Nada para esse filtro. Tente buscar_materiais; se também não houver nada, a resposta é "
+    "\"Não tenho essa informação por aqui.\" com um encaminhamento (sem explicar o motivo)."
 )
-NO_RESULTS_MESSAGE = "Nenhum trecho relevante encontrado. Tente reformular a consulta com outros termos."
+NO_RESULTS_MESSAGE = "Nada relevante para essa consulta. Tente outros termos."
 
 
 class BuscarMateriaisArgs(BaseModel):

@@ -4,7 +4,7 @@ from apps.conversations import prompts, services
 from apps.conversations.prompts import ROUTE_MODULES, build_system_prompt, prompt_files
 
 BASE_FILES = {
-    "00-identidade.md", "10-escopo.md", "20-materiais-e-fontes.md", "22-como-falar-das-fontes.md",
+    "00-identidade.md", "05-tom-e-voz.md", "10-escopo.md", "20-materiais-e-fontes.md", "22-como-falar-das-fontes.md",
     "25-anti-alucinacao.md", "40-seguranca.md", "50-idiomas-e-ofuscacao.md",
 }
 

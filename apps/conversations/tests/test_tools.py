@@ -76,7 +76,7 @@ def test_buscar_materiais_sem_resultado(make):
 
     out = tools["buscar_materiais"].invoke({"consulta": "x"})
 
-    assert out == "Nenhum trecho relevante encontrado. Tente reformular a consulta com outros termos."
+    assert out == tools_module.NO_RESULTS_MESSAGE
     assert registry.chunk_ids == []
 
 
